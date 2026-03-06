@@ -157,9 +157,13 @@ export default function ReservasPage() {
     const handleConfirm = async () => {
         if (selectedBlocks.length === 0 || !currentEq || !currentDay || !user) return
 
-        if (currentEq.requiresCertification && !userProfile.certifications.includes(currentEq.name)) {
-            toast.error(`No tienes certificación para usar: ${currentEq.name}`)
-            return
+        const reqCerts = ['Microscopio de Fluorescencia', 'Termociclador PCR']
+        if (reqCerts.includes(currentEq.name) || currentEq.requiresCertification) {
+            const hasCert = userProfile.certifications && userProfile.certifications.includes(currentEq.name)
+            if (!hasCert) {
+                toast.error(`No tienes la certificación requerida para usar: ${currentEq.name}`)
+                return
+            }
         }
 
         if (userProfile.role === 'estudiante' && selectedDate > 7) {

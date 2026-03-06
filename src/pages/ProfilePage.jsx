@@ -150,6 +150,22 @@ export default function MiLabPage() {
                 </div>
             </div>
 
+            {userProfile?.certifications && userProfile.certifications.length > 0 && (
+                <div className="card" style={{ padding: '20px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
+                        <Target size={20} color="#1A1A2E" />
+                        <h3 style={{ fontSize: '16px', fontWeight: '800', color: '#1A1A2E', margin: 0 }}>Mis Certificaciones</h3>
+                    </div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                        {userProfile.certifications.map(cert => (
+                            <span key={cert} style={{ background: '#E8F8ED', color: '#1A7A3A', padding: '6px 12px', borderRadius: '12px', fontSize: '12px', fontWeight: '800' }}>
+                                {cert}
+                            </span>
+                        ))}
+                    </div>
+                </div>
+            )}
+
             {userProfile?.role === 'admin' && (
                 <button
                     onClick={() => navigate('/admin')}

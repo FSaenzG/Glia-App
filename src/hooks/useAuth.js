@@ -61,27 +61,15 @@ export function useAuthListener() {
 
                                 if (inviteSnap.empty) {
                                     await signOut(auth)
-                                    toast.error('Acceso restringido. Solo usuarios invitados pueden registrarse.')
+                                    toast.error('Tu cuenta de Google no está registrada. Contacta al administrador.')
                                     logout()
                                     setLoading(false)
                                     return
                                 }
 
-                                validInvite = inviteSnap.docs.find(d => {
-                                    const data = d.data();
-                                    return data.expiresAt.toDate() > new Date();
-                                });
-
-                                if (!validInvite) {
-                                    await signOut(auth)
-                                    toast.error('Acceso restringido. Su invitación ha expirado.')
-                                    logout()
-                                    setLoading(false)
-                                    return
-                                }
-
-                                role = validInvite.data().role;
-                                group = validInvite.data().group;
+                                validInvite = inviteSnap.docs[0]
+                                role = validInvite.data().role
+                                group = validInvite.data().group
                             }
 
                             // Create new user document

@@ -2,8 +2,8 @@
 import { useState, useEffect } from 'react'
 import { useAuthStore } from '../store/authStore'
 import { db } from '../firebase'
-import { collection, onSnapshot, query, where, addDoc, updateDoc, doc, serverTimestamp, increment, getDoc } from 'firebase/firestore'
-import { Search, ChevronRight, Plus, X, Minus, Trash2 } from 'lucide-react'
+import { collection, onSnapshot, query, where, orderBy, addDoc, updateDoc, doc, serverTimestamp, increment, getDoc, getDocs } from 'firebase/firestore'
+import { Search, ChevronRight, Plus, X, Minus, Trash2, FileText, ArrowUpRight, ArrowDownRight, Edit2, Upload, History } from 'lucide-react'
 import toast from 'react-hot-toast'
 
 const updatePointsAndLevel = async (userId, pointsToAdd, userProfile, setUserProfile) => {
@@ -35,12 +35,15 @@ export default function InventoryPage() {
     const [filter, setFilter] = useState('Todos')
     const [viewAllGroups, setViewAllGroups] = useState(false)
 
-    const [isAddModalOpen, setIsAddModalOpen] = useState(false)
+    const [modalView, setModalView] = useState(null) // 'add', 'movement', 'detail', 'edit'
     const [selectedItem, setSelectedItem] = useState(null)
-    const [movementAmount, setMovementAmount] = useState(1)
+    const [selectedItemHistory, setSelectedItemHistory] = useState([])
 
-    // Form states
-    const [newItem, setNewItem] = useState({ name: '', category: 'Reactivo', quantity: 0, unit: 'L', minStock: 1, location: '', expirationDate: '' })
+    // Movement Form
+    const [movementForm, setMovementForm] = useState({ type: 'Entrada', quantity: 1, notes: '' })
+
+    // Add/Edit Form states
+    const [itemForm, setItemForm] = useState({ name: '', category: 'Ácidos', quantity: 0, unit: 'mL', minStock: 1, location: '', expirationDate: '', group: '' })
 
     const userGroup = userProfile?.group || 'Laboratorio'
     const isAdmin = userProfile?.role === 'admin'
@@ -60,91 +63,127 @@ export default function InventoryPage() {
         return unsub
     }, [userGroup, isAdmin, viewAllGroups])
 
-    const handleAddItem = async (e) => {
+    useEffect(() => {
+        if (selectedItem && modalView === 'detail') {
+            const fetchHistory = async () => {
+                const q = query(collection(db, 'inventory_movements'), where('reagentId', '==', selectedItem.id))
+                const snap = await getDocs(q)
+                const hist = snap.docs.map(d => d.data())
+                // sort client-side to avoid needing index
+                hist.sort((a, b) => {
+                    const tA = a.date?.toMillis ? a.date.toMillis() : 0
+                    const tB = b.date?.toMillis ? b.date.toMillis() : 0
+                    return tB - tA
+                })
+                setSelectedItemHistory(hist)
+            }
+            fetchHistory()
+        }
+    }, [selectedItem, modalView])
+
+    const handleSaveItem = async (e) => {
         e.preventDefault()
         if (!user) return
+
+        const targetGroup = itemForm.group || userGroup
+
         try {
-            const docRef = await addDoc(collection(db, 'inventory'), {
-                ...newItem,
-                group: userGroup,
-                quantity: Number(newItem.quantity),
-                minStock: Number(newItem.minStock),
-                createdAt: serverTimestamp()
-            })
+            if (modalView === 'add') {
+                const docRef = await addDoc(collection(db, 'inventory'), {
+                    ...itemForm,
+                    group: targetGroup,
+                    quantity: Number(itemForm.quantity),
+                    minStock: Number(itemForm.minStock),
+                    createdAt: serverTimestamp()
+                })
 
-            await addDoc(collection(db, 'inventory_movements'), {
-                reagentId: docRef.id,
-                reagentName: newItem.name,
-                type: 'initial',
-                amount: Number(newItem.quantity),
-                userId: user.uid,
-                userName: `${userProfile?.firstName} ${userProfile?.lastName}`,
-                group: userGroup,
-                date: serverTimestamp()
-            })
+                await addDoc(collection(db, 'inventory_movements'), {
+                    reagentId: docRef.id,
+                    reagentName: itemForm.name,
+                    type: 'Entrada Inicial',
+                    amount: Number(itemForm.quantity),
+                    userId: user.uid,
+                    userName: `${userProfile?.firstName} ${userProfile?.lastName}`,
+                    group: targetGroup,
+                    date: serverTimestamp(),
+                    notes: 'Inventario inicial'
+                })
 
-            await addDoc(collection(db, 'audit_log'), {
-                userId: user.uid,
-                userName: `${userProfile?.firstName} ${userProfile?.lastName}`.trim(),
-                action: 'inventory_created',
-                detail: `Registró nuevo ítem: ${newItem.name}`,
-                page: 'inventario',
-                createdAt: serverTimestamp(),
-            })
+                await addAuditLog('inventory_created', `Registró reactivo: ${itemForm.name}`)
+                toast.success('Reactivo guardado en inventario.')
+            } else if (modalView === 'edit') {
+                await updateDoc(doc(db, 'inventory', selectedItem.id), {
+                    ...itemForm,
+                    group: targetGroup,
+                    quantity: Number(itemForm.quantity),
+                    minStock: Number(itemForm.minStock)
+                })
+                toast.success('Reactivo actualizado.')
+            }
 
-            // +5 points
             await updatePointsAndLevel(user.uid, 5, userProfile, setUserProfile)
-
-            toast.success('Ítem añadido al inventario. +5 pts')
-            setIsAddModalOpen(false)
-            setNewItem({ name: '', category: 'Reactivo', quantity: 0, unit: 'L', minStock: 1, location: '', expirationDate: '' })
+            setModalView(null)
+            setItemForm({ name: '', category: 'Ácidos', quantity: 0, unit: 'mL', minStock: 1, location: '', expirationDate: '', group: '' })
         } catch (err) {
-            toast.error('Error al añadir ítem')
+            toast.error('Error al guardar reactivo')
             console.error(err)
         }
     }
 
-    const handleMovement = async (type) => {
-        if (!selectedItem || !user || movementAmount <= 0) return
+    const addAuditLog = async (action, detail) => {
+        await addDoc(collection(db, 'audit_log'), {
+            userId: user.uid,
+            userName: `${userProfile?.firstName} ${userProfile?.lastName}`.trim(),
+            action: action,
+            detail: detail,
+            page: 'inventario',
+            createdAt: serverTimestamp(),
+        })
+    }
 
-        const amount = type === 'add' ? movementAmount : -movementAmount
 
-        if (type === 'subtract' && selectedItem.quantity + amount < 0) {
-            toast.error('Stock insuficiente')
+    const handleMovement = async (e) => {
+        e.preventDefault()
+        if (!selectedItem || !user || movementForm.quantity <= 0) return
+
+        const isSalida = movementForm.type === 'Salida'
+        const amount = isSalida ? -movementForm.quantity : movementForm.quantity
+
+        if (isSalida && selectedItem.quantity + amount < 0) {
+            toast.error('Stock insuficiente para realizar esta salida')
             return
         }
 
         try {
+            const newQuantity = selectedItem.quantity + amount
+            let newStatus = 'ok'
+            if (newQuantity <= selectedItem.minStock * 0.5) newStatus = 'critical'
+            else if (newQuantity <= selectedItem.minStock) newStatus = 'low'
+
             await updateDoc(doc(db, 'inventory', selectedItem.id), {
-                quantity: increment(amount)
+                quantity: newQuantity,
+                status: newStatus
             })
 
             await addDoc(collection(db, 'inventory_movements'), {
                 reagentId: selectedItem.id,
                 reagentName: selectedItem.name,
-                type: type,
-                amount: Math.abs(amount),
+                type: movementForm.type,
+                amount: movementForm.quantity,
                 userId: user.uid,
                 userName: `${userProfile?.firstName} ${userProfile?.lastName}`,
                 group: selectedItem.group,
-                date: serverTimestamp()
+                date: serverTimestamp(),
+                notes: movementForm.notes
             })
 
-            await addDoc(collection(db, 'audit_log'), {
-                userId: user.uid,
-                userName: `${userProfile?.firstName} ${userProfile?.lastName}`.trim(),
-                action: 'inventory_movement',
-                detail: `Registró ${type === 'add' ? 'entrada' : 'salida'} de ${selectedItem.name} (${Math.abs(amount)})`,
-                page: 'inventario',
-                createdAt: serverTimestamp(),
-            })
-
-            // +5 points
+            await addAuditLog('inventory_movement', `Registró ${movementForm.type.toLowerCase()} de ${selectedItem.name} (${movementForm.quantity})`)
             await updatePointsAndLevel(user.uid, 5, userProfile, setUserProfile)
 
-            toast.success('Inventario actualizado. ¡+5 puntos!')
+            toast.success('Movimiento registrado. +5 pts')
+            setModalView(null)
             setSelectedItem(null)
-            setMovementAmount(1)
+            setMovementForm({ type: 'Entrada', quantity: 1, notes: '' })
         } catch (err) {
             toast.error('Error al actualizar inventario')
             console.error(err)
@@ -264,11 +303,19 @@ export default function InventoryPage() {
                                 <p style={{ fontSize: '12px', color: '#666666', margin: 0 }}>Ubicación: {item.location || 'N/A'}</p>
                             </div>
 
-                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '4px', paddingLeft: '8px' }}>
+                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '8px', paddingLeft: '8px', flexShrink: 0 }}>
                                 <span style={{ fontSize: '18px', fontWeight: '800', color: borderColor, whiteSpace: 'nowrap' }}>
                                     {item.quantity} {item.unit}
                                 </span>
-                                <ChevronRight size={18} color="#D1D5DB" />
+                                <button
+                                    onClick={(e) => {
+                                        e.stopPropagation()
+                                        setSelectedItem(item)
+                                        setModalView('movement')
+                                    }}
+                                    style={{ background: '#F5F5F5', color: '#9B72CF', border: 'none', borderRadius: '8px', padding: '6px 12px', fontSize: '11px', fontWeight: '800', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                    MOVER <Plus size={12} />
+                                </button>
                             </div>
                         </div>
                     )
@@ -278,7 +325,10 @@ export default function InventoryPage() {
             {/* Floating FAB for new item */}
             {(!viewAllGroups || isAdmin) && (
                 <button
-                    onClick={() => setIsAddModalOpen(true)}
+                    onClick={() => {
+                        setItemForm({ name: '', category: 'Ácidos', quantity: 0, unit: 'mL', minStock: 1, location: '', expirationDate: '', group: userGroup })
+                        setModalView('add')
+                    }}
                     style={{
                         position: 'fixed', bottom: 'calc(var(--bottom-nav-h, 72px) + 16px)', right: '16px', width: '56px', height: '56px',
                         background: '#9B72CF', color: 'white', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -288,77 +338,166 @@ export default function InventoryPage() {
                 </button>
             )}
 
-            {/* Modify Item Modal */}
-            {selectedItem && (
+            {/* Item Detail Modal */}
+            {modalView === 'detail' && selectedItem && (
                 <div style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.6)', zIndex: 1000, display: 'flex', alignItems: 'flex-end', justifyContent: 'center' }}>
-                    <div style={{ background: '#FFF', width: '100%', maxWidth: '480px', borderTopLeftRadius: '24px', borderTopRightRadius: '24px', padding: '24px', animation: 'slideUp 0.3s ease' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-                            <h2 style={{ fontSize: '20px', fontWeight: '800', color: '#1A1A2E', margin: 0 }}>{selectedItem.name}</h2>
-                            <button onClick={() => setSelectedItem(null)} style={{ background: 'none', border: 'none', cursor: 'pointer' }}><X size={24} color="#64748B" /></button>
+                    <div style={{ background: '#FFF', width: '100%', maxWidth: '480px', borderTopLeftRadius: '24px', borderTopRightRadius: '24px', padding: '24px', animation: 'slideUp 0.3s ease', maxHeight: '90vh', overflowY: 'auto' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '20px' }}>
+                            <div>
+                                <h2 style={{ fontSize: '20px', fontWeight: '800', color: '#1A1A2E', margin: '0 0 4px 0' }}>{selectedItem.name}</h2>
+                                <span style={{ fontSize: '12px', color: '#64748B', fontWeight: '600', background: '#F1F5F9', padding: '4px 8px', borderRadius: '8px' }}>
+                                    {selectedItem.category} | {selectedItem.group}
+                                </span>
+                            </div>
+                            <button onClick={() => setModalView(null)} style={{ background: '#F5F5F5', border: 'none', borderRadius: '50%', width: '32px', height: '32px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}>
+                                <X size={18} color="#666666" />
+                            </button>
                         </div>
 
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '16px', background: '#F8FAFC', borderRadius: '16px', marginBottom: '24px' }}>
-                            <span style={{ fontSize: '14px', fontWeight: '700', color: '#64748B' }}>Stock Actual</span>
-                            <span style={{ fontSize: '24px', fontWeight: '800', color: '#1A1A2E' }}>{selectedItem.quantity} {selectedItem.unit}</span>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '24px' }}>
+                            <div className="card" style={{ padding: '16px', background: '#F8FAFC', border: 'none', margin: 0 }}>
+                                <div style={{ fontSize: '11px', fontWeight: '700', color: '#64748B', textTransform: 'uppercase', marginBottom: '4px' }}>Stock Actual</div>
+                                <div style={{ fontSize: '22px', fontWeight: '800', color: '#1A1A2E' }}>{selectedItem.quantity} {selectedItem.unit}</div>
+                            </div>
+                            <div className="card" style={{ padding: '16px', background: '#F8FAFC', border: 'none', margin: 0 }}>
+                                <div style={{ fontSize: '11px', fontWeight: '700', color: '#64748B', textTransform: 'uppercase', marginBottom: '4px' }}>Ubicación</div>
+                                <div style={{ fontSize: '14px', fontWeight: '800', color: '#1A1A2E' }}>{selectedItem.location || 'N/A'}</div>
+                            </div>
+                            <div className="card" style={{ padding: '16px', background: '#F8FAFC', border: 'none', margin: 0 }}>
+                                <div style={{ fontSize: '11px', fontWeight: '700', color: '#64748B', textTransform: 'uppercase', marginBottom: '4px' }}>Vencimiento</div>
+                                <div style={{ fontSize: '14px', fontWeight: '800', color: '#1A1A2E' }}>{selectedItem.expirationDate || 'N/A'}</div>
+                            </div>
+                            <div className="card" style={{ padding: '16px', background: '#F8FAFC', border: 'none', margin: 0 }}>
+                                <div style={{ fontSize: '11px', fontWeight: '700', color: '#64748B', textTransform: 'uppercase', marginBottom: '4px' }}>Stock Mínimo</div>
+                                <div style={{ fontSize: '14px', fontWeight: '800', color: '#1A1A2E' }}>{selectedItem.minStock} {selectedItem.unit}</div>
+                            </div>
                         </div>
 
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '16px', marginBottom: '32px' }}>
-                            <input
-                                type="number"
-                                min="1"
-                                value={movementAmount}
-                                onChange={(e) => setMovementAmount(Number(e.target.value))}
-                                className="input-field"
-                                style={{ flex: 1, fontSize: '18px', textAlign: 'center', fontWeight: '700' }}
-                            />
-                            <span style={{ fontSize: '18px', fontWeight: '700', color: '#64748B' }}>{selectedItem.unit}</span>
-                        </div>
-
-                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                        {/* Action Buttons */}
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '24px' }}>
                             <button
-                                onClick={() => handleMovement('subtract')}
-                                style={{ background: '#FEF2F2', color: '#EF4444', border: 'none', borderRadius: '16px', padding: '16px', fontSize: '15px', fontWeight: '800', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', cursor: 'pointer' }}>
-                                <Minus size={20} /> Retirar
+                                onClick={() => {
+                                    setItemForm(selectedItem)
+                                    setModalView('edit')
+                                }}
+                                style={{ background: '#F5F5F5', color: '#666666', border: 'none', borderRadius: '12px', padding: '12px', fontSize: '13px', fontWeight: '800', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', cursor: 'pointer' }}>
+                                <Edit2 size={16} /> Editar
                             </button>
                             <button
-                                onClick={() => handleMovement('add')}
-                                style={{ background: '#F0FDF4', color: '#22C55E', border: 'none', borderRadius: '16px', padding: '16px', fontSize: '15px', fontWeight: '800', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', cursor: 'pointer' }}>
-                                <Plus size={20} /> Agregar
+                                onClick={() => toast.success('Función de carga de fichas u hojas de seguridad próximamente')}
+                                style={{ background: '#E5F0FF', color: '#007AFF', border: 'none', borderRadius: '12px', padding: '12px', fontSize: '13px', fontWeight: '800', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', cursor: 'pointer' }}>
+                                <Upload size={16} /> Subir SDS
                             </button>
+                        </div>
+
+                        {/* History */}
+                        <h3 style={{ fontSize: '16px', fontWeight: '800', color: '#1A1A2E', marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                            <History size={18} /> Historial de Movimientos
+                        </h3>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                            {selectedItemHistory.length === 0 ? (
+                                <p style={{ fontSize: '13px', color: '#64748B', textAlign: 'center', padding: '12px' }}>No hay movimientos aún</p>
+                            ) : (
+                                selectedItemHistory.map((hist, idx) => (
+                                    <div key={idx} style={{ padding: '12px', background: '#F8FAFC', borderRadius: '12px', borderLeft: `4px solid ${hist.type === 'Entrada' ? '#22C55E' : hist.type === 'Salida' ? '#EF4444' : '#9B72CF'}` }}>
+                                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
+                                            <span style={{ fontSize: '12px', fontWeight: '800', color: '#1A1A2E' }}>
+                                                {hist.type} <span style={{ color: '#64748B' }}>({hist.amount})</span>
+                                            </span>
+                                            <span style={{ fontSize: '10px', color: '#9CA3AF', fontWeight: '700' }}>
+                                                {hist.date?.toDate ? hist.date.toDate().toLocaleDateString() : 'Reciente'}
+                                            </span>
+                                        </div>
+                                        <p style={{ margin: '0 0 4px 0', fontSize: '11px', color: '#64748B' }}>{hist.userName}</p>
+                                        {hist.notes && <p style={{ margin: 0, fontSize: '11px', color: '#1A1A2E', fontStyle: 'italic' }}>"{hist.notes}"</p>}
+                                    </div>
+                                ))
+                            )}
                         </div>
                     </div>
                 </div>
             )}
 
-            {/* Add Item Modal */}
-            {isAddModalOpen && (
+            {/* Movement Modal */}
+            {modalView === 'movement' && selectedItem && (
+                <div style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.6)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '16px' }}>
+                    <div className="card" style={{ background: '#FFF', width: '100%', maxWidth: '400px', borderRadius: '24px', padding: '24px', animation: 'fadeIn 0.2s ease' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                            <h2 style={{ fontSize: '20px', fontWeight: '800', color: '#1A1A2E', margin: 0 }}>Registrar Movimiento</h2>
+                            <button onClick={() => setModalView(null)} style={{ background: 'none', border: 'none', cursor: 'pointer' }}><X size={24} color="#64748B" /></button>
+                        </div>
+
+                        <div style={{ marginBottom: '16px', padding: '12px', background: '#F8FAFC', borderRadius: '12px', textAlign: 'center' }}>
+                            <span style={{ fontSize: '12px', color: '#64748B', fontWeight: '700' }}>{selectedItem.name}</span>
+                            <div style={{ fontSize: '18px', fontWeight: '800', color: '#1A1A2E' }}>Stock: {selectedItem.quantity} {selectedItem.unit}</div>
+                        </div>
+
+                        <form onSubmit={handleMovement} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                            <div>
+                                <label style={{ fontSize: '12px', fontWeight: '700', color: '#64748B' }}>Tipo de Movimiento</label>
+                                <div style={{ display: 'flex', gap: '12px', marginTop: '8px' }}>
+                                    <div
+                                        onClick={() => setMovementForm({ ...movementForm, type: 'Entrada' })}
+                                        style={{ flex: 1, padding: '12px', borderRadius: '12px', textAlign: 'center', fontWeight: '800', fontSize: '14px', cursor: 'pointer', background: movementForm.type === 'Entrada' ? '#E8F8ED' : '#F5F5F5', color: movementForm.type === 'Entrada' ? '#16A34A' : '#64748B', border: movementForm.type === 'Entrada' ? '2px solid #22C55E' : '2px solid transparent' }}
+                                    >
+                                        Entrada
+                                    </div>
+                                    <div
+                                        onClick={() => setMovementForm({ ...movementForm, type: 'Salida' })}
+                                        style={{ flex: 1, padding: '12px', borderRadius: '12px', textAlign: 'center', fontWeight: '800', fontSize: '14px', cursor: 'pointer', background: movementForm.type === 'Salida' ? '#FEF2F2' : '#F5F5F5', color: movementForm.type === 'Salida' ? '#EF4444' : '#64748B', border: movementForm.type === 'Salida' ? '2px solid #EF4444' : '2px solid transparent' }}
+                                    >
+                                        Salida
+                                    </div>
+                                </div>
+                            </div>
+                            <div>
+                                <label style={{ fontSize: '12px', fontWeight: '700', color: '#64748B' }}>Cantidad ({selectedItem.unit})</label>
+                                <input type="number" required min="1" step="any" value={movementForm.quantity} onChange={(e) => setMovementForm({ ...movementForm, quantity: Number(e.target.value) })} className="input-field" style={{ background: '#F5F5F5', border: '1px solid #E0E0E0' }} />
+                            </div>
+                            <div>
+                                <label style={{ fontSize: '12px', fontWeight: '700', color: '#64748B' }}>Notas / Motivo</label>
+                                <input type="text" value={movementForm.notes} onChange={(e) => setMovementForm({ ...movementForm, notes: e.target.value })} className="input-field" placeholder="Ej. Práctica 1, Reabastecimiento..." style={{ background: '#F5F5F5', border: '1px solid #E0E0E0' }} />
+                            </div>
+                            <button type="submit" style={{ marginTop: '8px', padding: '16px', borderRadius: '16px', border: 'none', background: '#9B72CF', color: 'white', fontSize: '15px', fontWeight: '800', cursor: 'pointer', boxShadow: '0 4px 12px rgba(155,114,207,0.3)' }}>
+                                Confirmar Movimiento
+                            </button>
+                        </form>
+                    </div>
+                </div>
+            )}
+
+            {/* Add/Edit Item Modal */}
+            {(modalView === 'add' || modalView === 'edit') && (
                 <div style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.6)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '16px' }}>
                     <div className="card" style={{ width: '100%', maxWidth: '400px', padding: '24px', borderRadius: '24px', maxHeight: '90vh', overflowY: 'auto' }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-                            <h2 style={{ fontSize: '20px', fontWeight: '800', color: '#1A1A2E', margin: 0 }}>Nuevo Reactivo</h2>
-                            <button onClick={() => setIsAddModalOpen(false)} style={{ background: 'none', border: 'none', cursor: 'pointer' }}><X size={24} color="#64748B" /></button>
+                            <h2 style={{ fontSize: '20px', fontWeight: '800', color: '#1A1A2E', margin: 0 }}>{modalView === 'add' ? 'Nuevo Reactivo' : 'Editar Reactivo'}</h2>
+                            <button onClick={() => setModalView(null)} style={{ background: 'none', border: 'none', cursor: 'pointer' }}><X size={24} color="#64748B" /></button>
                         </div>
-                        <form onSubmit={handleAddItem} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                        <form onSubmit={handleSaveItem} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
                             <div>
                                 <label style={{ fontSize: '12px', fontWeight: '700', color: '#64748B' }}>Nombre</label>
-                                <input type="text" required value={newItem.name} onChange={(e) => setNewItem({ ...newItem, name: e.target.value })} className="input-field" />
+                                <input type="text" required value={itemForm.name} onChange={(e) => setItemForm({ ...itemForm, name: e.target.value })} className="input-field" style={{ background: '#F5F5F5', border: '1px solid #E0E0E0' }} />
                             </div>
                             <div style={{ display: 'flex', gap: '12px' }}>
                                 <div style={{ flex: 1 }}>
                                     <label style={{ fontSize: '12px', fontWeight: '700', color: '#64748B' }}>Categoría</label>
-                                    <select value={newItem.category} onChange={(e) => setNewItem({ ...newItem, category: e.target.value })} className="input-field">
-                                        <option>Reactivo</option>
-                                        <option>Solvente</option>
-                                        <option>Consumible</option>
+                                    <select value={itemForm.category} onChange={(e) => setItemForm({ ...itemForm, category: e.target.value })} className="input-field" style={{ background: '#F5F5F5', border: '1px solid #E0E0E0' }}>
+                                        <option>Ácidos</option>
+                                        <option>Bases</option>
+                                        <option>Solventes</option>
+                                        <option>Soluciones Buffer</option>
+                                        <option>Colorantes</option>
+                                        <option>Otros</option>
                                     </select>
                                 </div>
                                 <div style={{ flex: 1 }}>
                                     <label style={{ fontSize: '12px', fontWeight: '700', color: '#64748B' }}>Unidad</label>
-                                    <select value={newItem.unit} onChange={(e) => setNewItem({ ...newItem, unit: e.target.value })} className="input-field">
+                                    <select value={itemForm.unit} onChange={(e) => setItemForm({ ...itemForm, unit: e.target.value })} className="input-field" style={{ background: '#F5F5F5', border: '1px solid #E0E0E0' }}>
                                         <option>L</option>
                                         <option>mL</option>
+                                        <option>kg</option>
                                         <option>g</option>
-                                        <option>mg</option>
                                         <option>unidades</option>
                                     </select>
                                 </div>
@@ -366,23 +505,36 @@ export default function InventoryPage() {
                             <div style={{ display: 'flex', gap: '12px' }}>
                                 <div style={{ flex: 1 }}>
                                     <label style={{ fontSize: '12px', fontWeight: '700', color: '#64748B' }}>Stock Actual</label>
-                                    <input type="number" required min="0" step="any" value={newItem.quantity} onChange={(e) => setNewItem({ ...newItem, quantity: e.target.value })} className="input-field" />
+                                    <input type="number" required min="0" step="any" value={itemForm.quantity} onChange={(e) => setItemForm({ ...itemForm, quantity: e.target.value })} className="input-field" style={{ background: '#F5F5F5', border: '1px solid #E0E0E0' }} />
                                 </div>
                                 <div style={{ flex: 1 }}>
                                     <label style={{ fontSize: '12px', fontWeight: '700', color: '#64748B' }}>Stock Mínimo</label>
-                                    <input type="number" required min="0" step="any" value={newItem.minStock} onChange={(e) => setNewItem({ ...newItem, minStock: e.target.value })} className="input-field" />
+                                    <input type="number" required min="0" step="any" value={itemForm.minStock} onChange={(e) => setItemForm({ ...itemForm, minStock: e.target.value })} className="input-field" style={{ background: '#F5F5F5', border: '1px solid #E0E0E0' }} />
                                 </div>
                             </div>
                             <div>
                                 <label style={{ fontSize: '12px', fontWeight: '700', color: '#64748B' }}>Ubicación Física</label>
-                                <input type="text" value={newItem.location} onChange={(e) => setNewItem({ ...newItem, location: e.target.value })} className="input-field" placeholder="Ej. Estante A, Nevera 2" />
+                                <input type="text" value={itemForm.location} onChange={(e) => setItemForm({ ...itemForm, location: e.target.value })} className="input-field" placeholder="Ej. Estante A, Nevera 2" style={{ background: '#F5F5F5', border: '1px solid #E0E0E0' }} />
                             </div>
                             <div>
                                 <label style={{ fontSize: '12px', fontWeight: '700', color: '#64748B' }}>Fecha de Vencimiento (Opcional)</label>
-                                <input type="date" value={newItem.expirationDate} onChange={(e) => setNewItem({ ...newItem, expirationDate: e.target.value })} className="input-field" />
+                                <input type="date" value={itemForm.expirationDate} onChange={(e) => setItemForm({ ...itemForm, expirationDate: e.target.value })} className="input-field" style={{ background: '#F5F5F5', border: '1px solid #E0E0E0' }} />
                             </div>
-                            <button type="submit" className="submit-button" style={{ marginTop: '8px', padding: '16px', borderRadius: '16px', border: 'none', background: '#9B72CF', color: 'white', fontSize: '15px', fontWeight: '800', cursor: 'pointer' }}>
-                                Guardar en Inventario
+
+                            {isAdmin && (
+                                <div>
+                                    <label style={{ fontSize: '12px', fontWeight: '700', color: '#64748B' }}>Grupo Asignado (Admin)</label>
+                                    <select value={itemForm.group || userGroup} onChange={(e) => setItemForm({ ...itemForm, group: e.target.value })} className="input-field" style={{ background: '#F5F5F5', border: '1px solid #E0E0E0' }}>
+                                        <option value="Laboratorio">Laboratorio General</option>
+                                        <option value="Neurobioquímica">Neurobioquímica</option>
+                                        <option value="Bioquímica">Bioquímica</option>
+                                        <option value="Nutrición">Nutrición</option>
+                                    </select>
+                                </div>
+                            )}
+
+                            <button type="submit" className="submit-button" style={{ marginTop: '8px', padding: '16px', borderRadius: '16px', border: 'none', background: '#9B72CF', color: 'white', fontSize: '15px', fontWeight: '800', cursor: 'pointer', boxShadow: '0 4px 12px rgba(155,114,207,0.3)' }}>
+                                {modalView === 'add' ? 'Guardar Reactivo' : 'Actualizar Reactivo'}
                             </button>
                         </form>
                     </div>

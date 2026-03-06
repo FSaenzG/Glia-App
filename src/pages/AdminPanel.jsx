@@ -13,7 +13,7 @@ import {
     MoreVertical, Mail, Trash2, Ban, X, Key, Briefcase, Plus, Edit2
 } from 'lucide-react'
 
-const TABS = ['Usuarios', 'Auditoría', 'Equipos', 'Invitaciones']
+const TABS = ['Usuarios', 'Auditoría', 'Equipos', 'Invitaciones', 'Configuración']
 
 export default function AdminPanel() {
     const { userProfile, user } = useAuthStore()
@@ -32,7 +32,12 @@ export default function AdminPanel() {
     const [userEditForm, setUserEditForm] = useState({ id: null, role: '', group: '', isActive: true, certificationsText: '' })
 
     const [isEqModalOpen, setIsEqModalOpen] = useState(false)
-    const [eqForm, setEqForm] = useState({ id: null, name: '', status: 'available', location: '' })
+    const [eqForm, setEqForm] = useState({ id: null, name: '', status: 'available', location: '', maintenanceNote: '', returnDate: '' })
+
+    const [auditStartDate, setAuditStartDate] = useState('')
+    const [auditEndDate, setAuditEndDate] = useState('')
+
+    const [labSettings, setLabSettings] = useState({ regulations: '', emergencyProtocol: '', contacts: [] })
 
     // Listeners
     useEffect(() => {
@@ -60,6 +65,10 @@ export default function AdminPanel() {
             unsubInv = onSnapshot(q, (snap) => {
                 setInvitations(snap.docs.map(d => ({ id: d.id, ...d.data() })))
             })
+        } else if (activeTab === 'Configuración') {
+            unsubInv = onSnapshot(doc(db, 'settings', 'main'), (snap) => {
+                if (snap.exists()) setLabSettings(snap.data())
+            })
         }
 
         return () => {
@@ -83,16 +92,12 @@ export default function AdminPanel() {
                 return
             }
 
-            const expiresAt = new Date()
-            expiresAt.setHours(expiresAt.getHours() + 48) // 48h expiry
-
             await addDoc(collection(db, 'invitations'), {
                 email: inviteForm.email.trim(),
                 role: inviteForm.role,
                 group: inviteForm.group,
                 createdBy: user.uid,
                 createdAt: serverTimestamp(),
-                expiresAt: expiresAt,
                 used: false
             })
 
@@ -104,7 +109,7 @@ export default function AdminPanel() {
                 'admin'
             )
 
-            toast.success('Invitación enviada correctamente')
+            toast.success('Usuario agregado. Ya puede registrarse en la app.')
             setIsInviteModalOpen(false)
             setInviteForm({ email: '', role: 'estudiante', group: 'Laboratorio' })
         } catch (error) {
@@ -122,7 +127,9 @@ export default function AdminPanel() {
                 await updateDoc(doc(db, 'equipment', eqForm.id), {
                     name: eqForm.name,
                     status: eqForm.status,
-                    location: eqForm.location
+                    location: eqForm.location,
+                    maintenanceNote: eqForm.status === 'maintenance' ? eqForm.maintenanceNote : '',
+                    returnDate: eqForm.status === 'maintenance' ? eqForm.returnDate : ''
                 })
                 toast.success('Equipo actualizado')
             } else {
@@ -130,12 +137,14 @@ export default function AdminPanel() {
                     name: eqForm.name,
                     status: eqForm.status,
                     location: eqForm.location,
+                    maintenanceNote: eqForm.status === 'maintenance' ? eqForm.maintenanceNote : '',
+                    returnDate: eqForm.status === 'maintenance' ? eqForm.returnDate : '',
                     createdAt: serverTimestamp()
                 })
                 toast.success('Equipo añadido')
             }
             setIsEqModalOpen(false)
-            setEqForm({ id: null, name: '', status: 'available', location: '' })
+            setEqForm({ id: null, name: '', status: 'available', location: '', maintenanceNote: '', returnDate: '' })
         } catch (error) {
             console.error(error)
             toast.error('Error al guardar equipo')
@@ -178,6 +187,39 @@ export default function AdminPanel() {
         const name = `${u.firstName || ''} ${u.lastName || ''}`.toLowerCase()
         const term = search.toLowerCase()
         return name.includes(term) || u.email?.toLowerCase().includes(term)
+    })
+
+    const handleSaveSettings = async () => {
+        try {
+            const settingsRef = doc(db, 'settings', 'main')
+            // Using updateDoc directly might fail if document doesn't exist, handle nicely
+            try {
+                await updateDoc(settingsRef, labSettings)
+            } catch (err) {
+                // If it doesn't exist, create it (a trick without importing setDoc)
+                await db.collection('settings').doc('main').set(labSettings)
+            }
+            toast.success('Configuración guardada')
+        } catch (err) {
+            console.error(err)
+            toast.error('Error guardando configuración')
+        }
+    }
+
+    const filteredAuditLogs = auditLogs.filter(log => {
+        if (!auditStartDate && !auditEndDate) return true;
+        const logDateObj = log.createdAt?.toDate ? log.createdAt.toDate() : new Date();
+        const logTime = logDateObj.setHours(0, 0, 0, 0);
+
+        if (auditStartDate) {
+            const start = new Date(auditStartDate).setHours(0, 0, 0, 0);
+            if (logTime < start) return false;
+        }
+        if (auditEndDate) {
+            const end = new Date(auditEndDate).setHours(0, 0, 0, 0);
+            if (logTime > end) return false;
+        }
+        return true;
     })
 
     return (
@@ -272,11 +314,22 @@ export default function AdminPanel() {
             {/* Audit Logs Tab */}
             {activeTab === 'Auditoría' && (
                 <section style={{ animation: 'fadeIn 0.3s ease-out' }}>
+                    <div style={{ display: 'flex', gap: '12px', marginBottom: '16px' }}>
+                        <div style={{ flex: 1 }}>
+                            <label style={{ fontSize: '11px', fontWeight: '800', color: '#1A1A2E' }}>Fecha Inicio</label>
+                            <input type="date" value={auditStartDate} onChange={e => setAuditStartDate(e.target.value)} className="input-field" style={{ background: '#F5F5F5', border: 'none' }} />
+                        </div>
+                        <div style={{ flex: 1 }}>
+                            <label style={{ fontSize: '11px', fontWeight: '800', color: '#1A1A2E' }}>Fecha Fin</label>
+                            <input type="date" value={auditEndDate} onChange={e => setAuditEndDate(e.target.value)} className="input-field" style={{ background: '#F5F5F5', border: 'none' }} />
+                        </div>
+                    </div>
+
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                        {auditLogs.length === 0 ? (
-                            <div style={{ textAlign: 'center', padding: '40px', color: '#9CA3AF' }}>No hay registros de auditoría.</div>
+                        {filteredAuditLogs.length === 0 ? (
+                            <div style={{ textAlign: 'center', padding: '40px', color: '#9CA3AF' }}>No hay registros en este rango.</div>
                         ) : (
-                            auditLogs.map(log => (
+                            filteredAuditLogs.map(log => (
                                 <div key={log.id} style={{ background: '#FFFFFF', padding: '16px', borderRadius: '16px', borderLeft: '4px solid #9B72CF', boxShadow: '0 2px 8px rgba(0,0,0,0.05)' }}>
                                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '8px' }}>
                                         <span style={{ fontSize: '14px', fontWeight: '800', color: '#1A1A2E' }}>{log.action}</span>
@@ -326,7 +379,7 @@ export default function AdminPanel() {
                                 <div style={{ display: 'flex', gap: '8px', marginLeft: '12px' }}>
                                     <button
                                         onClick={() => {
-                                            setEqForm({ id: eq.id, name: eq.name, status: eq.status, location: eq.location })
+                                            setEqForm({ id: eq.id, name: eq.name, status: eq.status, location: eq.location, maintenanceNote: eq.maintenanceNote || '', returnDate: eq.returnDate || '' })
                                             setIsEqModalOpen(true)
                                         }}
                                         style={{ background: '#F5F5F5', color: '#666666', padding: '8px', borderRadius: '12px', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -372,6 +425,39 @@ export default function AdminPanel() {
                                 </div>
                             ))
                         )}
+                    </div>
+                </section>
+            )}
+
+            {/* Configuración Tab */}
+            {activeTab === 'Configuración' && (
+                <section style={{ animation: 'fadeIn 0.3s ease-out' }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+                        <div className="card" style={{ padding: '24px' }}>
+                            <h3 style={{ fontSize: '18px', fontWeight: '800', color: '#1A1A2E', marginBottom: '16px' }}>Reglamento del Laboratorio</h3>
+                            <textarea
+                                value={labSettings.regulations}
+                                onChange={e => setLabSettings({ ...labSettings, regulations: e.target.value })}
+                                className="input-field"
+                                style={{ background: '#F5F5F5', border: '1px solid #E0E0E0', minHeight: '150px', resize: 'vertical' }}
+                                placeholder="Escribe el reglamento oficial aquí..."
+                            />
+                        </div>
+
+                        <div className="card" style={{ padding: '24px' }}>
+                            <h3 style={{ fontSize: '18px', fontWeight: '800', color: '#1A1A2E', marginBottom: '16px' }}>Protocolo S.O.S (Emergencias)</h3>
+                            <textarea
+                                value={labSettings.emergencyProtocol}
+                                onChange={e => setLabSettings({ ...labSettings, emergencyProtocol: e.target.value })}
+                                className="input-field"
+                                style={{ background: '#F5F5F5', border: '1px solid #E0E0E0', minHeight: '150px', resize: 'vertical' }}
+                                placeholder="Escribe los pasos en caso de emergencia..."
+                            />
+                        </div>
+
+                        <button onClick={handleSaveSettings} style={{ width: '100%', padding: '16px', borderRadius: '16px', background: '#9B72CF', color: 'white', fontSize: '16px', fontWeight: '800', border: 'none', cursor: 'pointer', boxShadow: '0 4px 12px rgba(155,114,207,0.3)' }}>
+                            Guardar Configuración
+                        </button>
                     </div>
                 </section>
             )}
@@ -435,7 +521,7 @@ export default function AdminPanel() {
                             </div>
 
                             <button type="submit" style={{ width: '100%', padding: '16px', borderRadius: '16px', background: '#9B72CF', color: 'white', fontSize: '16px', fontWeight: '800', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', marginTop: '8px', boxShadow: '0 4px 12px rgba(155,114,207,0.3)' }}>
-                                Enviar Invitación
+                                Guardar Invitación
                             </button>
                         </form>
                     </div>
@@ -496,6 +582,34 @@ export default function AdminPanel() {
                                     placeholder="Ej. Cuarto 2"
                                 />
                             </div>
+
+                            {eqForm.status === 'maintenance' && (
+                                <>
+                                    <div>
+                                        <label style={{ fontSize: '13px', fontWeight: '800', color: '#1A1A2E', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                            Motivo / Nota de Mantenimiento
+                                        </label>
+                                        <textarea
+                                            value={eqForm.maintenanceNote}
+                                            onChange={e => setEqForm({ ...eqForm, maintenanceNote: e.target.value })}
+                                            className="input-field"
+                                            style={{ background: '#F5F5F5', border: '1px solid #E0E0E0' }}
+                                        />
+                                    </div>
+                                    <div>
+                                        <label style={{ fontSize: '13px', fontWeight: '800', color: '#1A1A2E', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                            Fecha Estimada de Retorno
+                                        </label>
+                                        <input
+                                            type="date"
+                                            value={eqForm.returnDate}
+                                            onChange={e => setEqForm({ ...eqForm, returnDate: e.target.value })}
+                                            className="input-field"
+                                            style={{ background: '#F5F5F5', border: '1px solid #E0E0E0' }}
+                                        />
+                                    </div>
+                                </>
+                            )}
 
                             <button type="submit" style={{ width: '100%', padding: '16px', borderRadius: '16px', background: '#9B72CF', color: 'white', fontSize: '16px', fontWeight: '800', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', marginTop: '8px', boxShadow: '0 4px 12px rgba(155,114,207,0.3)' }}>
                                 Guardar Equipo
@@ -566,14 +680,36 @@ export default function AdminPanel() {
                                 <label style={{ fontSize: '13px', fontWeight: '800', color: '#1A1A2E', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '6px' }}>
                                     <ShieldCheck size={16} color="#9B72CF" /> Certificaciones
                                 </label>
-                                <div style={{ fontSize: '11px', color: '#9CA3AF', marginBottom: '6px' }}>Separadas por comas (ej. Cabina de Cultivo 1, Reactivos)</div>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', background: '#F5F5F5', padding: '12px', borderRadius: '12px' }}>
+                                    {['Microscopio de Fluorescencia', 'Termociclador PCR'].map(cert => {
+                                        const currentCerts = userEditForm.certificationsText ? userEditForm.certificationsText.split(',').map(c => c.trim()) : []
+                                        const isChecked = currentCerts.includes(cert)
+                                        return (
+                                            <label key={cert} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '14px', color: '#1A1A2E', cursor: 'pointer' }}>
+                                                <input
+                                                    type="checkbox"
+                                                    checked={isChecked}
+                                                    onChange={e => {
+                                                        const newVal = e.target.checked
+                                                        let outCerts = [...currentCerts]
+                                                        if (newVal) outCerts.push(cert)
+                                                        else outCerts = outCerts.filter(c => c !== cert)
+                                                        setUserEditForm({ ...userEditForm, certificationsText: outCerts.join(', ') })
+                                                    }}
+                                                    style={{ width: '18px', height: '18px', accentColor: '#9B72CF' }}
+                                                />
+                                                {cert}
+                                            </label>
+                                        )
+                                    })}
+                                </div>
                                 <input
                                     type="text"
                                     value={userEditForm.certificationsText}
                                     onChange={e => setUserEditForm({ ...userEditForm, certificationsText: e.target.value })}
                                     className="input-field"
-                                    placeholder="Certificación 1, Certificación 2"
-                                    style={{ background: '#F5F5F5', border: '1px solid #E0E0E0' }}
+                                    placeholder="Otras certificaciones (separadas por coma)"
+                                    style={{ background: '#F5F5F5', border: '1px solid #E0E0E0', marginTop: '8px' }}
                                 />
                             </div>
 

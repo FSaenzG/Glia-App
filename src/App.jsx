@@ -13,6 +13,7 @@ import AppShell from './components/layout/AppShell'
 
 // Pages
 import LoginPage from './pages/LoginPage'
+import RegisterPage from './pages/RegisterPage'
 import RegulationsPage from './pages/RegulationsPage'
 import Dashboard from './pages/Dashboard'
 import ReservasPage from './pages/ReservasPage'
@@ -71,8 +72,8 @@ export default function App() {
     <BrowserRouter>
       <Toaster position="top-center" />
       <Routes>
-        {/* Public */}
         <Route path="/login" element={user ? <Navigate to="/" replace /> : <LoginPage />} />
+        <Route path="/register" element={user ? <Navigate to="/" replace /> : <RegisterPage />} />
 
         {/* Protected Onboarding */}
         <Route path="/regulations" element={<RegulationsPage />} />

@@ -139,6 +139,26 @@ export default function LoginPage() {
                             >
                                 {loading ? 'Verificando...' : 'Ingresar'}
                             </button>
+
+                            <button
+                                type="button"
+                                onClick={() => navigate('/register')}
+                                style={{
+                                    marginTop: '8px',
+                                    width: '100%',
+                                    padding: '16px',
+                                    borderRadius: '16px',
+                                    background: '#F0EBF8',
+                                    color: '#9B72CF',
+                                    fontSize: '15px',
+                                    fontWeight: '800',
+                                    border: 'none',
+                                    cursor: 'pointer',
+                                    boxShadow: '0 4px 12px rgba(155, 114, 207, 0.1)',
+                                }}
+                            >
+                                ¿Fuiste invitado? Regístrate aquí
+                            </button>
                         </form>
                     </>
                 ) : (
