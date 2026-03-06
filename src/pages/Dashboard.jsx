@@ -124,7 +124,12 @@ export default function Dashboard() {
         <div className="page-container" style={{ paddingBottom: '100px' }}>
             {/* Greeting Section */}
             <div className="greeting-section" style={{ marginBottom: '24px' }}>
-                <h1 className="greeting-title" style={{ fontSize: '24px', fontWeight: '800', color: '#1A1A2E', margin: '0 0 4px 0' }}>Hola, {firstName}</h1>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                    <h1 className="greeting-title" style={{ fontSize: '24px', fontWeight: '800', color: '#1A1A2E', margin: 0 }}>Hola, {firstName}</h1>
+                    {userProfile?.role === 'admin' && (
+                        <span style={{ background: '#2D1B5E', color: 'white', padding: '4px 8px', borderRadius: '8px', fontSize: '11px', fontWeight: '800', textTransform: 'uppercase', letterSpacing: '0.05em' }}>ADMIN</span>
+                    )}
+                </div>
                 <div className="greeting-subtitle" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                     <div className="status-dot" style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#34C759' }} />
                     <span style={{ fontSize: '14px', color: '#666666', fontWeight: '700' }}>Laboratorio {groupName} operativo</span>

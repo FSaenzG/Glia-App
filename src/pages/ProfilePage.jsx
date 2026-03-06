@@ -150,6 +150,16 @@ export default function MiLabPage() {
                 </div>
             </div>
 
+            {userProfile?.role === 'admin' && (
+                <button
+                    onClick={() => navigate('/admin')}
+                    style={{ width: '100%', background: '#2D1B5E', color: 'white', padding: '16px', borderRadius: '16px', fontSize: '16px', fontWeight: '800', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', boxShadow: '0 4px 12px rgba(45,27,94,0.3)' }}
+                >
+                    <Settings size={20} />
+                    Panel de Administración
+                </button>
+            )}
+
             {/* Health Visually */}
             <div className="card" style={{ padding: '20px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>

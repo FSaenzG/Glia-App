@@ -28,6 +28,9 @@ export default function AdminPanel() {
     const [isInviteModalOpen, setIsInviteModalOpen] = useState(false)
     const [inviteForm, setInviteForm] = useState({ email: '', role: 'estudiante', group: 'Laboratorio' })
 
+    const [isUserModalOpen, setIsUserModalOpen] = useState(false)
+    const [userEditForm, setUserEditForm] = useState({ id: null, role: '', group: '', isActive: true, certificationsText: '' })
+
     const [isEqModalOpen, setIsEqModalOpen] = useState(false)
     const [eqForm, setEqForm] = useState({ id: null, name: '', status: 'available', location: '' })
 
@@ -150,6 +153,27 @@ export default function AdminPanel() {
         }
     }
 
+    const handleUpdateUser = async (e) => {
+        e.preventDefault()
+        try {
+            const certsArray = userEditForm.certificationsText
+                ? userEditForm.certificationsText.split(',').map(c => c.trim()).filter(c => c)
+                : []
+
+            await updateDoc(doc(db, 'users', userEditForm.id), {
+                role: userEditForm.role,
+                group: userEditForm.group,
+                isActive: userEditForm.isActive,
+                certifications: certsArray
+            })
+            toast.success('Usuario actualizado')
+            setIsUserModalOpen(false)
+        } catch (error) {
+            console.error('Error in user update:', error)
+            toast.error('Error al actualizar el usuario')
+        }
+    }
+
     const filteredUsers = usersList.filter(u => {
         const name = `${u.firstName || ''} ${u.lastName || ''}`.toLowerCase()
         const term = search.toLowerCase()
@@ -218,12 +242,26 @@ export default function AdminPanel() {
                                         <div style={{ display: 'flex', gap: '8px' }}>
                                             <span style={{ fontSize: '10px', fontWeight: '800', color: '#9B72CF', background: '#F0EBF8', padding: '2px 8px', borderRadius: '8px' }}>{u.role?.toUpperCase()}</span>
                                             <span style={{ fontSize: '10px', fontWeight: '800', color: '#666666', background: '#F5F5F5', padding: '2px 8px', borderRadius: '8px', whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden' }}>{u.group}</span>
+                                            {u.isActive === false && (
+                                                <span style={{ fontSize: '10px', fontWeight: '800', color: '#EF4444', background: '#FEF2F2', padding: '2px 8px', borderRadius: '8px' }}>SUSPENDIDO</span>
+                                            )}
                                         </div>
                                     </div>
                                 </div>
 
-                                <button style={{ background: 'none', border: 'none', color: '#D1D5DB', cursor: 'pointer', padding: '8px' }}>
-                                    <MoreVertical size={20} />
+                                <button
+                                    onClick={() => {
+                                        setUserEditForm({
+                                            id: u.id,
+                                            role: u.role || 'estudiante',
+                                            group: u.group || 'Laboratorio',
+                                            isActive: u.isActive !== false,
+                                            certificationsText: (u.certifications || []).join(', ')
+                                        })
+                                        setIsUserModalOpen(true)
+                                    }}
+                                    style={{ background: 'none', border: 'none', color: '#D1D5DB', cursor: 'pointer', padding: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                    <Edit2 size={20} />
                                 </button>
                             </div>
                         ))}
@@ -461,6 +499,86 @@ export default function AdminPanel() {
 
                             <button type="submit" style={{ width: '100%', padding: '16px', borderRadius: '16px', background: '#9B72CF', color: 'white', fontSize: '16px', fontWeight: '800', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', marginTop: '8px', boxShadow: '0 4px 12px rgba(155,114,207,0.3)' }}>
                                 Guardar Equipo
+                            </button>
+                        </form>
+                    </div>
+                </div>
+            )}
+
+            {/* Edit User Modal */}
+            {isUserModalOpen && (
+                <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '16px' }}>
+                    <div className="card" style={{ width: '100%', maxWidth: '400px', padding: '24px', borderRadius: '24px', position: 'relative', animation: 'fadeIn 0.2s ease-out' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
+                            <h2 style={{ fontSize: '20px', fontWeight: '800', color: '#1A1A2E', margin: 0 }}>Modificar Usuario</h2>
+                            <button onClick={() => setIsUserModalOpen(false)} style={{ background: '#F5F5F5', border: 'none', borderRadius: '50%', width: '32px', height: '32px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}>
+                                <X size={18} color="#666666" />
+                            </button>
+                        </div>
+
+                        <form onSubmit={handleUpdateUser} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                            <div>
+                                <label style={{ fontSize: '13px', fontWeight: '800', color: '#1A1A2E', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                    <Key size={16} color="#9B72CF" /> Rol
+                                </label>
+                                <select
+                                    value={userEditForm.role}
+                                    onChange={e => setUserEditForm({ ...userEditForm, role: e.target.value })}
+                                    className="input-field" style={{ background: '#F5F5F5', border: '1px solid #E0E0E0' }}
+                                >
+                                    <option value="estudiante">Estudiante / Pasante</option>
+                                    <option value="profesor_asignado">Profesor Asignado</option>
+                                    <option value="admin">Administrador</option>
+                                </select>
+                            </div>
+
+                            <div>
+                                <label style={{ fontSize: '13px', fontWeight: '800', color: '#1A1A2E', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                    <Briefcase size={16} color="#9B72CF" /> Grupo de Investigación
+                                </label>
+                                <select
+                                    value={userEditForm.group}
+                                    onChange={e => setUserEditForm({ ...userEditForm, group: e.target.value })}
+                                    className="input-field" style={{ background: '#F5F5F5', border: '1px solid #E0E0E0' }}
+                                >
+                                    <option value="Laboratorio">Laboratorio General</option>
+                                    <option value="Neurobioquímica">Neurobioquímica</option>
+                                    <option value="Bioquímica">Bioquímica</option>
+                                    <option value="Nutrición">Nutrición</option>
+                                </select>
+                            </div>
+
+                            <div>
+                                <label style={{ fontSize: '13px', fontWeight: '800', color: '#1A1A2E', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                    <Settings size={16} color="#9B72CF" /> Estado de la cuenta
+                                </label>
+                                <select
+                                    value={userEditForm.isActive ? 'active' : 'suspended'}
+                                    onChange={e => setUserEditForm({ ...userEditForm, isActive: e.target.value === 'active' })}
+                                    className="input-field" style={{ background: '#F5F5F5', border: '1px solid #E0E0E0', color: userEditForm.isActive ? '#1A1A2E' : '#FF3B30' }}
+                                >
+                                    <option value="active">Activo</option>
+                                    <option value="suspended">Suspendido (Restringido)</option>
+                                </select>
+                            </div>
+
+                            <div>
+                                <label style={{ fontSize: '13px', fontWeight: '800', color: '#1A1A2E', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                    <ShieldCheck size={16} color="#9B72CF" /> Certificaciones
+                                </label>
+                                <div style={{ fontSize: '11px', color: '#9CA3AF', marginBottom: '6px' }}>Separadas por comas (ej. Cabina de Cultivo 1, Reactivos)</div>
+                                <input
+                                    type="text"
+                                    value={userEditForm.certificationsText}
+                                    onChange={e => setUserEditForm({ ...userEditForm, certificationsText: e.target.value })}
+                                    className="input-field"
+                                    placeholder="Certificación 1, Certificación 2"
+                                    style={{ background: '#F5F5F5', border: '1px solid #E0E0E0' }}
+                                />
+                            </div>
+
+                            <button type="submit" style={{ width: '100%', padding: '16px', borderRadius: '16px', background: '#9B72CF', color: 'white', fontSize: '16px', fontWeight: '800', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', marginTop: '8px', boxShadow: '0 4px 12px rgba(155,114,207,0.3)' }}>
+                                Actualizar Usuario
                             </button>
                         </form>
                     </div>
