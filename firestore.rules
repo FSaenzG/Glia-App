@@ -1,0 +1,78 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions
+    function isAuth() { return request.auth != null; }
+    function uid() { return request.auth.uid; }
+
+    // Safe role check — returns 'student' if doc doesn't exist yet
+    function userDoc() {
+      return get(/databases/$(database)/documents/users/$(uid()));
+    }
+    function role() {
+      return isAuth() && exists(/databases/$(database)/documents/users/$(uid()))
+        ? userDoc().data.role
+        : 'student';
+    }
+    function isAdmin() { return isAuth() && role() == 'admin'; }
+    function isResearcher() { return isAuth() && (role() == 'admin' || role() == 'researcher'); }
+
+    // Users — any authenticated user can read all profiles (needed for ranking, admin views)
+    match /users/{userId} {
+      allow read: if isAuth();
+      allow create: if isAuth() && uid() == userId;
+      allow update: if isAuth() && (uid() == userId || isAdmin());
+      allow delete: if isAdmin();
+    }
+
+    // Invites — anyone can read (needed for token verification during registration)
+    match /invites/{inviteId} {
+      allow read: if true;
+      allow create, update: if isResearcher();
+      allow delete: if isAdmin();
+    }
+
+    // Reservations
+    match /reservations/{resId} {
+      allow read: if isAuth();
+      allow create: if isAuth();
+      allow update: if isAuth() && (resource.data.userId == uid() || isResearcher());
+      allow delete: if isResearcher();
+    }
+
+    // Equipment status
+    match /equipment/{equipId} {
+      allow read: if isAuth();
+      allow write: if isResearcher();
+    }
+
+    // Inventory
+    match /inventory/{itemId} {
+      allow read: if isAuth();
+      allow create, update: if isResearcher();
+      allow delete: if isAdmin();
+    }
+
+    // Inventory movements — append-only for all authenticated users
+    match /inventoryMovements/{movId} {
+      allow read: if isAuth();
+      allow create: if isAuth();
+      allow update, delete: if isAdmin();
+    }
+
+    // Audit logs — append-only, only admins read
+    match /auditLogs/{logId} {
+      allow read: if isAdmin();
+      allow create: if isAuth();
+      allow update, delete: if false;
+    }
+
+    // Emergency alerts
+    match /emergencyAlerts/{alertId} {
+      allow read: if isResearcher();
+      allow create: if isAuth();
+      allow update: if isAdmin();
+    }
+  }
+}
