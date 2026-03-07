@@ -9,6 +9,8 @@ export default defineConfig({
     tailwindcss(),
     VitePWA({
       registerType: 'autoUpdate',
+      // Force new SW to activate immediately (skip waiting + take control)
+      injectRegister: 'auto',
       includeAssets: ['favicon.ico', 'icon-192.png', 'icon-512.png'],
       manifest: {
         name: 'Glia — Lab Management',
@@ -26,6 +28,11 @@ export default defineConfig({
         ]
       },
       workbox: {
+        // Bust old precaches on every deploy
+        cleanupOutdatedCaches: true,
+        // Activate new SW immediately without waiting for all tabs to close
+        skipWaiting: true,
+        clientsClaim: true,
         globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
         navigateFallback: '/index.html',
         navigateFallbackDenylist: [/^\/__/],
@@ -38,7 +45,7 @@ export default defineConfig({
           {
             urlPattern: /^https:\/\/firestore\.googleapis\.com\/.*/i,
             handler: 'NetworkFirst',
-            options: { cacheName: 'firestore-cache' }
+            options: { cacheName: 'firestore-cache', expiration: { maxEntries: 50, maxAgeSeconds: 60 * 5 } }
           }
         ]
       }
