@@ -7,8 +7,8 @@ import { doc, updateDoc, serverTimestamp } from 'firebase/firestore'
 import { db } from '../../firebase'
 import toast from 'react-hot-toast'
 import {
-    Home, Calendar, FlaskConical, User,
-    Bot, AlertTriangle, LogOut
+    Home, Calendar, FlaskConical,
+    Bot, AlertTriangle, LogOut, Shield
 } from 'lucide-react'
 
 // Components
@@ -20,6 +20,12 @@ export default function AppShell() {
     const navigate = useNavigate()
     const location = useLocation()
     const [chatOpen, setChatOpen] = useState(false)
+    const [currentTime, setCurrentTime] = useState(new Date())
+
+    useEffect(() => {
+        const timer = setInterval(() => setCurrentTime(new Date()), 1000)
+        return () => clearInterval(timer)
+    }, [])
 
     useEffect(() => {
         if (user) {
@@ -46,7 +52,7 @@ export default function AppShell() {
         { to: '/', icon: Home, label: 'Inicio' },
         { to: '/reservas', icon: Calendar, label: 'Reservas' },
         { to: '/inventario', icon: FlaskConical, label: 'Inventario' },
-        { to: '/mi-lab', icon: User, label: 'Mi Lab' },
+        ...(userProfile?.role === 'admin' ? [{ to: '/mi-lab', icon: Shield, label: 'Mi Lab' }] : []),
     ]
 
     const hideShellPaths = ['/login', '/regulations']
@@ -102,11 +108,14 @@ export default function AppShell() {
 
                     {/* Desktop header left content */}
                     <div className="hidden lg:flex items-center text-[#666] font-medium text-[14px] gap-2">
-                        <span className="font-bold text-[#1A1A2E]">{group}</span>
+                        <div style={{ display: 'flex', flexDirection: 'column' }}>
+                            <span className="font-bold text-[#1A1A2E]">{displayName}</span>
+                            <span style={{ fontSize: '11px', color: '#9CA3AF', fontWeight: '600', fontVariantNumeric: 'tabular-nums' }}>
+                                {currentTime.toLocaleTimeString('es-CO', { timeZone: 'America/Bogota', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })} Bogotá (UTC-5)
+                            </span>
+                        </div>
                         <span className="text-[#E5E7EB]">—</span>
-                        <span>{displayName}</span>
-                        <span className="text-[#E5E7EB]">—</span>
-                        <span className="text-[#9B72CF] uppercase text-[12px] font-bold tracking-wider">{role}</span>
+                        <span style={{ fontSize: '12px', background: '#F0EBF8', color: '#9B72CF', padding: '3px 8px', borderRadius: '8px', fontWeight: '800' }}>{group}</span>
                     </div>
 
                     <div className="header-icons ml-auto" style={{ marginLeft: 'auto' }}>

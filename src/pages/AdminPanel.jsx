@@ -26,13 +26,16 @@ export default function AdminPanel() {
 
     const [search, setSearch] = useState('')
     const [isInviteModalOpen, setIsInviteModalOpen] = useState(false)
-    const [inviteForm, setInviteForm] = useState({ email: '', role: 'estudiante', group: 'Laboratorio' })
+    const [inviteForm, setInviteForm] = useState({ email: '', role: 'usuario', group: 'Laboratorio' })
 
     const [isUserModalOpen, setIsUserModalOpen] = useState(false)
     const [userEditForm, setUserEditForm] = useState({ id: null, role: '', group: '', isActive: true, certificationsText: '' })
 
+    const [isCertModalOpen, setIsCertModalOpen] = useState(false)
+    const [certUserForm, setCertUserForm] = useState({ id: null, firstName: '', lastName: '', certifications: [], initialCertifications: [] })
+
     const [isEqModalOpen, setIsEqModalOpen] = useState(false)
-    const [eqForm, setEqForm] = useState({ id: null, name: '', status: 'available', location: '', maintenanceNote: '', returnDate: '' })
+    const [eqForm, setEqForm] = useState({ id: null, name: '', category: 'General', status: 'available', location: '', maintenanceNote: '', returnDate: '' })
 
     const [auditStartDate, setAuditStartDate] = useState('')
     const [auditEndDate, setAuditEndDate] = useState('')
@@ -103,7 +106,7 @@ export default function AdminPanel() {
 
             await addAuditLog(
                 user.uid,
-                `${userProfile?.firstName} ${userProfile?.lastName}`,
+                (userProfile?.firstName && userProfile?.lastName) ? `${userProfile.firstName} ${userProfile.lastName}` : (user?.displayName || 'Administrador'),
                 'invitation_created',
                 `Invitación enviada a ${inviteForm.email.trim()}`,
                 'admin'
@@ -111,7 +114,7 @@ export default function AdminPanel() {
 
             toast.success('Usuario agregado. Ya puede registrarse en la app.')
             setIsInviteModalOpen(false)
-            setInviteForm({ email: '', role: 'estudiante', group: 'Laboratorio' })
+            setInviteForm({ email: '', role: 'usuario', group: 'Laboratorio' })
         } catch (error) {
             console.error('Error in invite:', error)
             toast.error('Hubo un error al enviar la invitación')
@@ -126,6 +129,7 @@ export default function AdminPanel() {
             if (eqForm.id) {
                 await updateDoc(doc(db, 'equipment', eqForm.id), {
                     name: eqForm.name,
+                    category: eqForm.category,
                     status: eqForm.status,
                     location: eqForm.location,
                     maintenanceNote: eqForm.status === 'maintenance' ? eqForm.maintenanceNote : '',
@@ -135,6 +139,7 @@ export default function AdminPanel() {
             } else {
                 await addDoc(collection(db, 'equipment'), {
                     name: eqForm.name,
+                    category: eqForm.category,
                     status: eqForm.status,
                     location: eqForm.location,
                     maintenanceNote: eqForm.status === 'maintenance' ? eqForm.maintenanceNote : '',
@@ -144,7 +149,7 @@ export default function AdminPanel() {
                 toast.success('Equipo añadido')
             }
             setIsEqModalOpen(false)
-            setEqForm({ id: null, name: '', status: 'available', location: '', maintenanceNote: '', returnDate: '' })
+            setEqForm({ id: null, name: '', category: 'General', status: 'available', location: '', maintenanceNote: '', returnDate: '' })
         } catch (error) {
             console.error(error)
             toast.error('Error al guardar equipo')
@@ -180,6 +185,33 @@ export default function AdminPanel() {
         } catch (error) {
             console.error('Error in user update:', error)
             toast.error('Error al actualizar el usuario')
+        }
+    }
+
+    const handleSaveCerts = async (e) => {
+        e.preventDefault()
+        try {
+            await updateDoc(doc(db, 'users', certUserForm.id), {
+                certifications: certUserForm.certifications
+            })
+
+            for (const cert of certUserForm.certifications) {
+                if (!certUserForm.initialCertifications.includes(cert)) {
+                    await addAuditLog(
+                        user.uid,
+                        (userProfile?.firstName && userProfile?.lastName) ? `${userProfile.firstName} ${userProfile.lastName}` : (user?.displayName || 'Administrador'),
+                        'user_certified',
+                        `Admin certified ${certUserForm.firstName} ${certUserForm.lastName} for ${cert}`,
+                        'admin'
+                    )
+                }
+            }
+
+            toast.success('Certificaciones actualizadas')
+            setIsCertModalOpen(false)
+        } catch (err) {
+            console.error(err)
+            toast.error('Error al actualizar certificaciones')
         }
     }
 
@@ -291,20 +323,38 @@ export default function AdminPanel() {
                                     </div>
                                 </div>
 
-                                <button
-                                    onClick={() => {
-                                        setUserEditForm({
-                                            id: u.id,
-                                            role: u.role || 'estudiante',
-                                            group: u.group || 'Laboratorio',
-                                            isActive: u.isActive !== false,
-                                            certificationsText: (u.certifications || []).join(', ')
-                                        })
-                                        setIsUserModalOpen(true)
-                                    }}
-                                    style={{ background: 'none', border: 'none', color: '#D1D5DB', cursor: 'pointer', padding: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                                    <Edit2 size={20} />
-                                </button>
+                                <div style={{ display: 'flex', gap: '8px' }}>
+                                    <button
+                                        onClick={() => {
+                                            setCertUserForm({
+                                                id: u.id,
+                                                firstName: u.firstName || '',
+                                                lastName: u.lastName || '',
+                                                certifications: u.certifications || [],
+                                                initialCertifications: u.certifications || []
+                                            })
+                                            setIsCertModalOpen(true)
+                                        }}
+                                        style={{ background: 'none', border: 'none', color: '#9B72CF', cursor: 'pointer', padding: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                                        title="Certificaciones"
+                                    >
+                                        <ShieldCheck size={20} />
+                                    </button>
+                                    <button
+                                        onClick={() => {
+                                            setUserEditForm({
+                                                id: u.id,
+                                                role: u.role || 'usuario',
+                                                group: u.group || 'Laboratorio',
+                                                isActive: u.isActive !== false,
+                                                certificationsText: (u.certifications || []).join(', ')
+                                            })
+                                            setIsUserModalOpen(true)
+                                        }}
+                                        style={{ background: 'none', border: 'none', color: '#D1D5DB', cursor: 'pointer', padding: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                        <Edit2 size={20} />
+                                    </button>
+                                </div>
                             </div>
                         ))}
                     </div>
@@ -340,7 +390,9 @@ export default function AdminPanel() {
                                     <p style={{ fontSize: '13px', color: '#666666', margin: '0 0 8px 0' }}>{log.detail}</p>
                                     <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                                         <Users size={12} color="#9CA3AF" />
-                                        <span style={{ fontSize: '11px', fontWeight: '700', color: '#9CA3AF' }}>{log.userName}</span>
+                                        <span style={{ fontSize: '11px', fontWeight: '700', color: '#9CA3AF' }}>
+                                            {(!log.userName || log.userName === 'undefined undefined') ? 'Usuario Glia' : log.userName}
+                                        </span>
                                         <span style={{ fontSize: '11px', fontWeight: '700', color: '#D1D5DB' }}>| {log.page}</span>
                                     </div>
                                 </div>
@@ -356,7 +408,7 @@ export default function AdminPanel() {
                     <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '16px' }}>
                         <button
                             onClick={() => {
-                                setEqForm({ id: null, name: '', status: 'available', location: '' })
+                                setEqForm({ id: null, name: '', category: 'General', status: 'available', location: '' })
                                 setIsEqModalOpen(true)
                             }}
                             style={{ background: '#9B72CF', color: 'white', padding: '12px 24px', borderRadius: '12px', fontSize: '14px', fontWeight: '800', border: 'none', display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', boxShadow: '0 4px 12px rgba(155,114,207,0.3)' }}>
@@ -371,15 +423,18 @@ export default function AdminPanel() {
                                     <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                                         <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: eq.status === 'available' ? '#34C759' : eq.status === 'in_use' ? '#FF9500' : '#FF3B30' }} />
                                         <span style={{ fontSize: '12px', fontWeight: '800', color: '#666666', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                                            {eq.status === 'available' ? 'Disponible' : eq.status === 'in_use' ? 'En Uso' : eq.status === 'maintenance' ? 'Mantenimiento' : eq.status}
+                                            {eq.status === 'available' ? 'Activo' : eq.status === 'in_use' ? 'En Uso' : eq.status === 'maintenance' ? 'Agenda bloqueada por administrador' : eq.status === 'out_of_service' ? 'Bloqueado por daño' : eq.status}
                                         </span>
                                     </div>
-                                    <p style={{ fontSize: '12px', color: '#9CA3AF', margin: '4px 0 0 0' }}>Ubicación: {eq.location || 'N/A'}</p>
+                                    <div style={{ display: 'flex', gap: '12px', marginTop: '4px' }}>
+                                        <p style={{ fontSize: '12px', color: '#9CA3AF', margin: 0 }}>Categoría: {eq.category || 'N/A'}</p>
+                                        <p style={{ fontSize: '12px', color: '#9CA3AF', margin: 0 }}>Ubicación: {eq.location || 'N/A'}</p>
+                                    </div>
                                 </div>
                                 <div style={{ display: 'flex', gap: '8px', marginLeft: '12px' }}>
                                     <button
                                         onClick={() => {
-                                            setEqForm({ id: eq.id, name: eq.name, status: eq.status, location: eq.location, maintenanceNote: eq.maintenanceNote || '', returnDate: eq.returnDate || '' })
+                                            setEqForm({ id: eq.id, name: eq.name, category: eq.category || 'General', status: eq.status, location: eq.location, maintenanceNote: eq.maintenanceNote || '', returnDate: eq.returnDate || '' })
                                             setIsEqModalOpen(true)
                                         }}
                                         style={{ background: '#F5F5F5', color: '#666666', padding: '8px', borderRadius: '12px', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -498,8 +553,7 @@ export default function AdminPanel() {
                                     onChange={e => setInviteForm({ ...inviteForm, role: e.target.value })}
                                     className="input-field" style={{ background: '#F5F5F5', border: '1px solid #E0E0E0' }}
                                 >
-                                    <option value="estudiante">Estudiante / Pasante</option>
-                                    <option value="profesor_asignado">Profesor Asignado</option>
+                                    <option value="usuario">Usuario</option>
                                     <option value="admin">Administrador</option>
                                 </select>
                             </div>
@@ -556,6 +610,20 @@ export default function AdminPanel() {
 
                             <div>
                                 <label style={{ fontSize: '13px', fontWeight: '800', color: '#1A1A2E', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                    Categoría
+                                </label>
+                                <input
+                                    type="text"
+                                    value={eqForm.category}
+                                    onChange={e => setEqForm({ ...eqForm, category: e.target.value })}
+                                    className="input-field"
+                                    style={{ background: '#F5F5F5', border: '1px solid #E0E0E0' }}
+                                    placeholder="Ej. Microscopía"
+                                />
+                            </div>
+
+                            <div>
+                                <label style={{ fontSize: '13px', fontWeight: '800', color: '#1A1A2E', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '6px' }}>
                                     Estado
                                 </label>
                                 <select
@@ -563,9 +631,9 @@ export default function AdminPanel() {
                                     onChange={e => setEqForm({ ...eqForm, status: e.target.value })}
                                     className="input-field" style={{ background: '#F5F5F5', border: '1px solid #E0E0E0' }}
                                 >
-                                    <option value="available">Disponible</option>
-                                    <option value="in_use">En Uso</option>
-                                    <option value="maintenance">Mantenimiento</option>
+                                    <option value="available">Activo</option>
+                                    <option value="maintenance">Agenda bloqueada por administrador</option>
+                                    <option value="out_of_service">Bloqueado por daño</option>
                                 </select>
                             </div>
 
@@ -640,8 +708,7 @@ export default function AdminPanel() {
                                     onChange={e => setUserEditForm({ ...userEditForm, role: e.target.value })}
                                     className="input-field" style={{ background: '#F5F5F5', border: '1px solid #E0E0E0' }}
                                 >
-                                    <option value="estudiante">Estudiante / Pasante</option>
-                                    <option value="profesor_asignado">Profesor Asignado</option>
+                                    <option value="usuario">Usuario</option>
                                     <option value="admin">Administrador</option>
                                 </select>
                             </div>
@@ -715,6 +782,64 @@ export default function AdminPanel() {
 
                             <button type="submit" style={{ width: '100%', padding: '16px', borderRadius: '16px', background: '#9B72CF', color: 'white', fontSize: '16px', fontWeight: '800', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', marginTop: '8px', boxShadow: '0 4px 12px rgba(155,114,207,0.3)' }}>
                                 Actualizar Usuario
+                            </button>
+                        </form>
+                    </div>
+                </div>
+            )}
+
+            {/* Certifications Modal */}
+            {isCertModalOpen && (
+                <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '16px' }}>
+                    <div className="card" style={{ width: '100%', maxWidth: '400px', padding: '24px', borderRadius: '24px', position: 'relative', animation: 'fadeIn 0.2s ease-out' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
+                            <h2 style={{ fontSize: '20px', fontWeight: '800', color: '#1A1A2E', margin: 0 }}>Certificaciones</h2>
+                            <button onClick={() => setIsCertModalOpen(false)} style={{ background: '#F5F5F5', border: 'none', borderRadius: '50%', width: '32px', height: '32px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}>
+                                <X size={18} color="#666666" />
+                            </button>
+                        </div>
+                        <p style={{ fontSize: '14px', color: '#666', marginBottom: '16px' }}>
+                            Gestionar accesos para <strong>{certUserForm.firstName} {certUserForm.lastName}</strong>
+                        </p>
+
+                        <form onSubmit={handleSaveCerts} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', background: '#F5F5F5', padding: '16px', borderRadius: '16px' }}>
+                                {['Microscopio de Fluorescencia', 'Termociclador PCR'].map(cert => {
+                                    const isChecked = certUserForm.certifications.includes(cert)
+                                    return (
+                                        <div key={cert} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                            <span style={{ fontSize: '14px', fontWeight: '700', color: '#1A1A2E' }}>{cert}</span>
+                                            <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', position: 'relative' }}>
+                                                <input
+                                                    type="checkbox"
+                                                    checked={isChecked}
+                                                    onChange={(e) => {
+                                                        const newVal = e.target.checked
+                                                        let newCerts = [...certUserForm.certifications]
+                                                        if (newVal) newCerts.push(cert)
+                                                        else newCerts = newCerts.filter(c => c !== cert)
+                                                        setCertUserForm({ ...certUserForm, certifications: newCerts })
+                                                    }}
+                                                    style={{ display: 'none' }}
+                                                />
+                                                <div style={{
+                                                    width: '44px', height: '24px', background: isChecked ? '#34C759' : '#D1D5DB',
+                                                    borderRadius: '12px', position: 'relative', transition: '0.2s',
+                                                }}>
+                                                    <div style={{
+                                                        width: '20px', height: '20px', background: 'white', borderRadius: '50%',
+                                                        position: 'absolute', top: '2px', left: isChecked ? '22px' : '2px', transition: '0.2s',
+                                                        boxShadow: '0 2px 4px rgba(0,0,0,0.2)'
+                                                    }} />
+                                                </div>
+                                            </label>
+                                        </div>
+                                    )
+                                })}
+                            </div>
+
+                            <button type="submit" style={{ width: '100%', padding: '16px', borderRadius: '16px', background: '#9B72CF', color: 'white', fontSize: '16px', fontWeight: '800', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', marginTop: '8px', boxShadow: '0 4px 12px rgba(155,114,207,0.3)' }}>
+                                Guardar Certificaciones
                             </button>
                         </form>
                     </div>

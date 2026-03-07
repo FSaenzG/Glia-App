@@ -3,13 +3,13 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../store/authStore'
 import { db } from '../firebase'
-import { collection, query, where, orderBy, limit, getDocs } from 'firebase/firestore'
-import { formatDistanceToNow, parseISO, format } from 'date-fns'
+import { collection, query, where, orderBy, limit, getDocs, getDoc, doc, onSnapshot } from 'firebase/firestore'
+import { formatDistanceToNow, parseISO, format, isAfter, parseISO as parseDateISO } from 'date-fns'
 import { es } from 'date-fns/locale'
 
 import {
     Calendar, AlertTriangle, FlaskConical,
-    CheckCircle2, Clock, AlertCircle
+    Clock, ArrowRight
 } from 'lucide-react'
 
 export default function Dashboard() {
@@ -18,7 +18,8 @@ export default function Dashboard() {
 
     const [nextReservation, setNextReservation] = useState(null)
     const [recentActivity, setRecentActivity] = useState([])
-    const [healthState, setHealthState] = useState({ text: 'Verificando...', issues: 0 })
+    const [stockAlerts, setStockAlerts] = useState([])
+    const [loadingNext, setLoadingNext] = useState(true)
     const [loading, setLoading] = useState(true)
 
     let firstName = 'Investigador'
@@ -30,164 +31,204 @@ export default function Dashboard() {
 
     const groupName = userProfile?.group || 'Laboratorio'
 
+    // Real-time listener for next reservation — updates when admin deletes or user creates
     useEffect(() => {
-        const fetchDashboardData = async () => {
-            if (!user) return
-            try {
-                // Fetch next reservation
-                const today = new Date().toISOString().split('T')[0]
-                const resQ = query(
-                    collection(db, 'reservations'),
-                    where('userId', '==', user.uid),
-                    where('status', '==', 'confirmed')
-                )
-                const resSnap = await getDocs(resQ)
-                const allDocs = resSnap.docs.map(d => ({ id: d.id, ...d.data() }))
+        if (!user?.uid) return
 
-                const futureDocs = allDocs.filter(d => d.date >= today)
-                futureDocs.sort((a, b) => {
-                    if (a.date !== b.date) return a.date.localeCompare(b.date)
-                    return a.startTime.localeCompare(b.startTime)
-                })
+        // Single where clause (no composite index needed)
+        const resQ = query(
+            collection(db, 'reservations'),
+            where('userId', '==', user.uid)
+        )
+        const unsub = onSnapshot(resQ, (snap) => {
+            const all = snap.docs.map(d => ({ id: d.id, ...d.data() }))
 
-                if (futureDocs.length > 0) {
-                    setNextReservation(futureDocs[0])
-                } else {
-                    setNextReservation(null)
+            const now = new Date()
+            const nowStr = now.toISOString().split('T')[0]  // "YYYY-MM-DD"
+            const nowTime = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`   // "HH:MM"
+
+            const future = all.filter(res => {
+                if (!res.date) return false
+                if (res.status !== 'confirmed') return false
+
+                // Strictly future date → always include
+                if (res.date > nowStr) return true
+
+                // Today → include only if endTime hasn't passed yet
+                if (res.date === nowStr) {
+                    const endTime = res.endTime || '23:59'
+                    // Handle "24:00" as end of day
+                    return endTime === '24:00' || endTime > nowTime
                 }
 
-                // Fetch recent activity
+                // Past date → exclude
+                return false
+            })
+
+            future.sort((a, b) => {
+                const dateComp = (a.date || '').localeCompare(b.date || '')
+                if (dateComp !== 0) return dateComp
+                return (a.startTime || '').localeCompare(b.startTime || '')
+            })
+
+            setNextReservation(future.length > 0 ? future[0] : null)
+            setLoadingNext(false)
+        }, (err) => {
+            console.error('Reservations onSnapshot error:', err)
+            setLoadingNext(false)
+        })
+        return unsub
+    }, [user?.uid])
+
+    // Fetch audit log + stock alerts (less frequently, not real-time needed)
+    useEffect(() => {
+        const fetchStatic = async () => {
+            if (!user) return
+            try {
+                // Recent activity
                 let actSnap;
                 try {
                     const actQ = query(
                         collection(db, 'audit_log'),
-                        orderBy('timestamp', 'desc'),
+                        orderBy('createdAt', 'desc'),
                         limit(5)
                     )
                     actSnap = await getDocs(actQ)
                 } catch (err) {
-                    // Fallback if timestamp index is missing or field is createdAt
-                    const actQ2 = query(collection(db, 'audit_log'), limit(15))
+                    const actQ2 = query(collection(db, 'audit_log'), limit(20))
                     const tempSnap = await getDocs(actQ2)
-                    const logs = tempSnap.docs.map(d => ({ id: d.id, ...d.data() }))
+                    let logs = tempSnap.docs.map(d => ({ id: d.id, ...d.data() }))
                     logs.sort((a, b) => {
-                        const timeA = a.timestamp?.toMillis ? a.timestamp.toMillis() : (a.createdAt?.toMillis ? a.createdAt.toMillis() : 0)
-                        const timeB = b.timestamp?.toMillis ? b.timestamp.toMillis() : (b.createdAt?.toMillis ? b.createdAt.toMillis() : 0)
+                        const timeA = a.createdAt?.toMillis ? a.createdAt.toMillis() : 0
+                        const timeB = b.createdAt?.toMillis ? b.createdAt.toMillis() : 0
                         return timeB - timeA;
                     })
                     actSnap = { docs: logs.slice(0, 5).map(l => ({ id: l.id, data: () => l })) }
                 }
 
-                setRecentActivity(actSnap.docs.map(d => {
-                    const data = d.data()
-                    return { id: d.id, ...data }
-                }))
+                const logsMap = actSnap.docs.map(d => ({ id: d.id, ...d.data() }))
 
-                // Fetch health data
-                const eqSnap = await getDocs(collection(db, 'equipment'))
-                const inMaintenance = eqSnap.docs.filter(d => {
-                    const status = d.data().status
-                    return status === 'maintenance' || status === 'broken' || status === 'repair' || status === 'out_of_service'
-                }).length
-
-                const invSnap = await getDocs(collection(db, 'inventory'))
-                const criticalInv = invSnap.docs.filter(d => {
-                    const qnty = d.data().quantity || d.data().currentStock || 0
-                    const min = d.data().minStock || 0
-                    return qnty <= (min * 0.5)
-                }).length
-
-                const totalIssues = inMaintenance + criticalInv;
-                if (totalIssues > 0) {
-                    setHealthState({ text: `${totalIssues} atención(es) requerida(s)`, issues: totalIssues })
-                } else {
-                    setHealthState({ text: 'Sistema en estado óptimo', issues: 0 })
+                const uniqueUserIds = [...new Set(logsMap.map(log => log.userId).filter(Boolean))]
+                const photoMap = {}
+                for (const uid of uniqueUserIds) {
+                    try {
+                        const snap = await getDoc(doc(db, 'users', uid))
+                        if (snap.exists()) photoMap[uid] = snap.data().photoURL || null
+                    } catch (e) { }
                 }
 
+                setRecentActivity(logsMap.map(log => ({
+                    ...log,
+                    userPhoto: log.userPhoto || photoMap[log.userId] || null
+                })))
+
+                // Stock alerts
+                const invQ = query(collection(db, 'inventory'), where('group', '==', groupName))
+                const invSnap = await getDocs(invQ)
+                const alerts = invSnap.docs
+                    .map(d => ({ id: d.id, ...d.data() }))
+                    .filter(item => item.quantity <= item.minStock)
+                setStockAlerts(alerts)
             } catch (err) {
-                console.error("Error fetching dashboard data:", err)
+                console.error('Error fetching dashboard static data:', err)
             } finally {
                 setLoading(false)
             }
         }
-
-        fetchDashboardData()
+        fetchStatic()
     }, [user])
 
     const quickActions = [
-        { label: 'Reservas', icon: Calendar, colorClass: 'green', path: '/reservas' },
-        { label: 'R. Daño', icon: AlertTriangle, colorClass: 'orange', path: '/damage-report' },
+        { label: 'Mis reservas', icon: Calendar, colorClass: 'green', path: '/reservas' },
         { label: 'Inventario', icon: FlaskConical, colorClass: 'blue', path: '/inventario' },
+        { label: 'Reportar Daño', icon: AlertTriangle, colorClass: 'orange', path: '/damage-report', fullWidth: true },
     ]
 
     return (
         <div className="page-container" style={{ paddingBottom: '100px' }}>
             {/* Greeting Section */}
-            <div className="greeting-section" style={{ marginBottom: '24px' }}>
+            <div className="greeting-section" style={{ marginBottom: '32px' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
                     <h1 className="greeting-title" style={{ fontSize: '24px', fontWeight: '800', color: '#1A1A2E', margin: 0 }}>Hola, {firstName}</h1>
                     {userProfile?.role === 'admin' && (
                         <span style={{ background: '#2D1B5E', color: 'white', padding: '4px 8px', borderRadius: '8px', fontSize: '11px', fontWeight: '800', textTransform: 'uppercase', letterSpacing: '0.05em' }}>ADMIN</span>
                     )}
                 </div>
-                <div className="greeting-subtitle" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <div className="status-dot" style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#34C759' }} />
-                    <span style={{ fontSize: '14px', color: '#666666', fontWeight: '700' }}>Laboratorio {groupName} operativo</span>
-                </div>
-            </div>
-
-            {/* Lab Health Badge */}
-            <div className="health-badge" style={{ display: 'flex', alignItems: 'center', gap: '8px', background: healthState.issues > 0 ? '#FEF2F2' : '#F0FDF4', color: healthState.issues > 0 ? '#EF4444' : '#16A34A', padding: '12px 16px', borderRadius: '16px', marginBottom: '32px', fontWeight: '800', fontSize: '13px' }}>
-                {healthState.issues > 0 ? <AlertCircle size={18} /> : <CheckCircle2 size={18} />}
-                <span>{healthState.text}</span>
             </div>
 
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '24px' }}>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
                     {/* Next Activity Card */}
-                    <div className="card" style={{ padding: '24px', position: 'relative', overflow: 'hidden' }}>
-                        <div style={{ fontSize: '11px', fontWeight: '800', color: '#9B72CF', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '12px' }}>MI PRÓXIMA ACTIVIDAD</div>
-                        {loading ? (
-                            <h2 style={{ fontSize: '18px', fontWeight: '800', color: '#1A1A2E', margin: 0 }}>Cargando...</h2>
+                    <div className="card" style={{ padding: '24px', position: 'relative', overflow: 'hidden', borderLeft: '5px solid #9B72CF' }}>
+                        <div style={{ fontSize: '11px', fontWeight: '900', color: '#9B72CF', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '16px' }}>MI PRÓXIMA ACTIVIDAD</div>
+                        {loadingNext ? (
+                            <div style={{ fontSize: '14px', color: '#9CA3AF', fontWeight: '600' }}>Cargando...</div>
                         ) : nextReservation ? (
-                            <>
-                                <h2 style={{ fontSize: '20px', fontWeight: '800', color: '#1A1A2E', margin: '0 0 8px 0' }}>{nextReservation.equipmentName}</h2>
-                                <div style={{ fontSize: '14px', color: '#666666', fontWeight: '600' }}>
-                                    {format(parseISO(nextReservation.date), "EEEE d 'de' MMMM", { locale: es }).replace(/^\w/, c => c.toUpperCase())} • {nextReservation.startTime} - {nextReservation.endTime}
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                                <h2 style={{ fontSize: '22px', fontWeight: '900', color: '#1A1A2E', margin: 0, letterSpacing: '-0.02em' }}>{nextReservation.equipmentName}</h2>
+                                <div style={{ fontSize: '14px', color: '#64748B', fontWeight: '600', textTransform: 'capitalize' }}>
+                                    {format(parseISO(nextReservation.date), "EEEE d 'de' MMMM", { locale: es })}
                                 </div>
-                            </>
+                                <div style={{ fontSize: '20px', color: '#9B72CF', fontWeight: '900' }}>
+                                    {nextReservation.startTime} — {nextReservation.endTime}
+                                </div>
+                                <div style={{ marginTop: '4px' }}>
+                                    <span style={{ background: '#E8F8ED', color: '#16A34A', padding: '4px 10px', borderRadius: '8px', fontSize: '11px', fontWeight: '800', textTransform: 'uppercase' }}>Confirmada</span>
+                                </div>
+                                <button
+                                    onClick={() => navigate('/reservas')}
+                                    style={{ marginTop: '8px', display: 'flex', alignItems: 'center', gap: '6px', background: '#1A1A2E', color: 'white', border: 'none', borderRadius: '12px', padding: '10px 18px', fontSize: '13px', fontWeight: '800', cursor: 'pointer', width: 'fit-content' }}
+                                >
+                                    Ver reserva <ArrowRight size={14} />
+                                </button>
+                            </div>
                         ) : (
-                            <>
-                                <h2 style={{ fontSize: '18px', fontWeight: '800', color: '#666666', margin: '0 0 8px 0' }}>No hay reservas próximas</h2>
-                                <div style={{ fontSize: '14px', color: '#9CA3AF', fontWeight: '600' }}>Nada programado</div>
-                            </>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                                <h2 style={{ fontSize: '18px', fontWeight: '800', color: '#94A3B8', margin: 0 }}>Sin actividades programadas</h2>
+                                <div style={{ fontSize: '14px', color: '#CBD5E1', fontWeight: '500' }}>Reserva un equipo para comenzar.</div>
+                                <button
+                                    onClick={() => navigate('/reservas')}
+                                    style={{ marginTop: '8px', display: 'flex', alignItems: 'center', gap: '6px', background: '#F1F5F9', color: '#64748B', border: 'none', borderRadius: '12px', padding: '10px 18px', fontSize: '13px', fontWeight: '800', cursor: 'pointer', width: 'fit-content' }}
+                                >
+                                    Ir a Reservas <ArrowRight size={14} />
+                                </button>
+                            </div>
                         )}
-                        <button
-                            onClick={() => navigate('/reservas')}
-                            style={{ position: 'absolute', right: '24px', bottom: '24px', width: '48px', height: '48px', borderRadius: '16px', background: '#F5F5F5', display: 'flex', alignItems: 'center', justifyContent: 'center', border: 'none', cursor: 'pointer', color: '#1A1A2E' }}
-                        >
-                            <Calendar size={20} />
-                        </button>
                     </div>
 
-                    {/* Quick Actions */}
                     <div>
                         <div style={{ fontSize: '16px', fontWeight: '800', color: '#1A1A2E', marginBottom: '16px' }}>Accesos Rápidos</div>
-                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '12px' }}>
-                            {quickActions.map((action) => {
-                                const bgColors = { green: '#E8F8ED', orange: '#FFF4E5', blue: '#E5F0FF' }
-                                const iconColors = { green: '#34C759', orange: '#FF9500', blue: '#007AFF' }
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                            {quickActions.map((action, idx) => {
+                                const bgColors = { green: '#E8F8ED', orange: '#FFF0EF', blue: '#E5F0FF' }
+                                const iconColors = { green: '#34C759', orange: '#FF3B30', blue: '#007AFF' }
                                 return (
                                     <div
-                                        key={action.label}
+                                        key={idx}
                                         onClick={() => navigate(action.path)}
                                         className="card"
-                                        style={{ padding: '16px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px', cursor: 'pointer' }}
+                                        style={{
+                                            padding: action.fullWidth ? '24px' : '16px',
+                                            display: 'flex',
+                                            flexDirection: action.fullWidth ? 'row' : 'column',
+                                            alignItems: 'center',
+                                            justifyContent: action.fullWidth ? 'flex-start' : 'center',
+                                            gap: '16px',
+                                            cursor: 'pointer',
+                                            gridColumn: action.fullWidth ? 'span 2' : 'auto',
+                                            border: action.fullWidth ? '1px solid #FFD6D6' : 'none',
+                                            background: action.fullWidth ? '#FFF0EF' : '#FFFFFF'
+                                        }}
                                     >
-                                        <div style={{ width: '48px', height: '48px', borderRadius: '16px', background: bgColors[action.colorClass], display: 'flex', alignItems: 'center', justifyContent: 'center', color: iconColors[action.colorClass] }}>
+                                        <div style={{
+                                            width: '48px', height: '48px', borderRadius: '16px',
+                                            background: action.fullWidth ? '#FFD6D6' : bgColors[action.colorClass],
+                                            display: 'flex', alignItems: 'center', justifyContent: 'center', color: iconColors[action.colorClass],
+                                            flexShrink: 0
+                                        }}>
                                             <action.icon strokeWidth={2.5} size={24} />
                                         </div>
-                                        <span style={{ fontSize: '13px', fontWeight: '800', color: '#1A1A2E' }}>
+                                        <span style={{ fontSize: action.fullWidth ? '15px' : '13px', fontWeight: '800', color: '#1A1A2E' }}>
                                             {action.label}
                                         </span>
                                     </div>
@@ -195,13 +236,35 @@ export default function Dashboard() {
                             })}
                         </div>
                     </div>
+
+                    {/* Stock Alerts Section */}
+                    {stockAlerts.length > 0 && (
+                        <div>
+                            <div style={{ fontSize: '16px', fontWeight: '800', color: '#1A1A2E', marginBottom: '16px' }}>Alertas de Stock</div>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                                {stockAlerts.map((alert, idx) => (
+                                    <div key={alert.id} className="card" style={{ padding: '16px', borderLeft: '4px solid #FF3B30', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                                        <div>
+                                            <div style={{ fontSize: '14px', fontWeight: '800', color: '#1A1A2E', marginBottom: '4px' }}>{alert.name}</div>
+                                            <div style={{ fontSize: '12px', color: '#666' }}>Quedan {alert.quantity} {alert.unit} (Mín: {alert.minStock})</div>
+                                        </div>
+                                        <button
+                                            onClick={() => navigate('/inventario')}
+                                            style={{ background: '#FFF0EF', color: '#FF3B30', border: '1px solid #FFD6D6', borderRadius: '8px', padding: '8px', fontSize: '12px', fontWeight: '800', cursor: 'pointer', width: '100%' }}
+                                        >
+                                            REVISAR
+                                        </button>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
                 </div>
 
                 <div>
                     {/* Activity Feed */}
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
                         <div style={{ fontSize: '16px', fontWeight: '800', color: '#1A1A2E' }}>Actividad Reciente</div>
-                        <div style={{ fontSize: '13px', fontWeight: '800', color: '#9B72CF', cursor: 'pointer' }}>Ver todo</div>
                     </div>
 
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
@@ -229,15 +292,25 @@ export default function Dashboard() {
 
                             return (
                                 <div key={item.id} className="card" style={{ padding: '16px', borderLeft: `4px solid ${colorSet.text}` }}>
-                                    <div style={{ fontSize: '14px', fontWeight: '800', color: '#1A1A2E', marginBottom: '4px' }}>{item.action || item.type}</div>
-                                    <div style={{ fontSize: '13px', color: '#666666', marginBottom: '12px', lineHeight: '1.4' }}>{item.details || item.detail}</div>
+                                    <div style={{ display: 'flex', gap: '12px', alignItems: 'flex-start' }}>
+                                        <img
+                                            src={item.userPhoto || `https://ui-avatars.com/api/?name=${item.userName || 'U'}&background=random`}
+                                            alt="Avatar"
+                                            style={{ width: '32px', height: '32px', borderRadius: '50%', objectFit: 'cover', background: '#F5F5F5' }}
+                                        />
+                                        <div style={{ flex: 1 }}>
+                                            <div style={{ fontSize: '14px', fontWeight: '800', color: '#1A1A2E', marginBottom: '4px' }}>
+                                                {(!item.userName || item.userName === 'undefined undefined') ? 'Usuario Glia' : item.userName}
+                                            </div>
+                                            <div style={{ fontSize: '13px', color: '#666666', marginBottom: '12px', lineHeight: '1.4' }}>
+                                                {item.detail}
+                                            </div>
+                                        </div>
+                                    </div>
                                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                                         <div style={{ display: 'flex', alignItems: 'center', gap: '4px', color: '#9CA3AF', fontSize: '11px', fontWeight: '700' }}>
                                             <Clock size={12} />
                                             <span>{timeAgo}</span>
-                                        </div>
-                                        <div style={{ background: colorSet.bg, color: colorSet.text, padding: '4px 8px', borderRadius: '8px', fontSize: '10px', fontWeight: '800', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                                            {item.userName || 'Sistema'}
                                         </div>
                                     </div>
                                 </div>

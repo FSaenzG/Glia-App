@@ -5,6 +5,7 @@ import { db } from '../firebase'
 import { collection, onSnapshot, query, where, orderBy, addDoc, updateDoc, doc, serverTimestamp, increment, getDoc, getDocs } from 'firebase/firestore'
 import { Search, ChevronRight, Plus, X, Minus, Trash2, FileText, ArrowUpRight, ArrowDownRight, Edit2, Upload, History } from 'lucide-react'
 import toast from 'react-hot-toast'
+import { addAuditLog } from '../hooks/useAuth'
 
 const updatePointsAndLevel = async (userId, pointsToAdd, userProfile, setUserProfile) => {
     try {
@@ -43,25 +44,35 @@ export default function InventoryPage() {
     const [movementForm, setMovementForm] = useState({ type: 'Entrada', quantity: 1, notes: '' })
 
     // Add/Edit Form states
-    const [itemForm, setItemForm] = useState({ name: '', category: 'Ácidos', quantity: 0, unit: 'mL', minStock: 1, location: '', expirationDate: '', group: '' })
+    const [itemForm, setItemForm] = useState({ name: '', category: 'Reactivos químicos', quantity: 0, unit: 'mL', minStock: 1, location: '', expirationDate: '', group: '', notes: '' })
 
-    const userGroup = userProfile?.group || 'Laboratorio'
+    const userGroup = userProfile?.group || 'Bioquímica'
     const isAdmin = userProfile?.role === 'admin'
 
-    useEffect(() => {
-        let q = collection(db, 'inventory')
+    // Admins can switch groups; users are locked to their own
+    const [selectedGroup, setSelectedGroup] = useState(userGroup)
 
-        if (!isAdmin || !viewAllGroups) {
-            q = query(q, where('group', '==', userGroup))
+    // If user profile loads after mount, sync the group
+    useEffect(() => {
+        if (userProfile?.group && !isAdmin) {
+            setSelectedGroup(userProfile.group)
         }
+    }, [userProfile?.group])
+
+    useEffect(() => {
+        if (!selectedGroup) return
+        const q = query(collection(db, 'inventory'), where('group', '==', selectedGroup))
 
         const unsub = onSnapshot(q, (snap) => {
             const data = snap.docs.map(d => ({ id: d.id, ...d.data() }))
             setInventory(data)
+        }, (err) => {
+            console.error('Inventory onSnapshot error:', err)
+            toast.error('Error cargando inventario: ' + err.message)
         })
 
         return unsub
-    }, [userGroup, isAdmin, viewAllGroups])
+    }, [selectedGroup])
 
     useEffect(() => {
         if (selectedItem && modalView === 'detail') {
@@ -103,13 +114,13 @@ export default function InventoryPage() {
                     type: 'Entrada Inicial',
                     amount: Number(itemForm.quantity),
                     userId: user.uid,
-                    userName: `${userProfile?.firstName} ${userProfile?.lastName}`,
+                    userName: (userProfile?.firstName && userProfile?.lastName) ? `${userProfile.firstName} ${userProfile.lastName}` : (user?.displayName || 'Usuario'),
                     group: targetGroup,
                     date: serverTimestamp(),
                     notes: 'Inventario inicial'
                 })
 
-                await addAuditLog('inventory_created', `Registró reactivo: ${itemForm.name}`)
+                await handleAuditLog('inventory_created', `Registró reactivo: ${itemForm.name}`)
                 toast.success('Reactivo guardado en inventario.')
             } else if (modalView === 'edit') {
                 await updateDoc(doc(db, 'inventory', selectedItem.id), {
@@ -123,22 +134,21 @@ export default function InventoryPage() {
 
             await updatePointsAndLevel(user.uid, 5, userProfile, setUserProfile)
             setModalView(null)
-            setItemForm({ name: '', category: 'Ácidos', quantity: 0, unit: 'mL', minStock: 1, location: '', expirationDate: '', group: '' })
+            setItemForm({ name: '', category: 'Reactivos químicos', quantity: 0, unit: 'mL', minStock: 1, location: '', expirationDate: '', group: userGroup, notes: '' })
         } catch (err) {
-            toast.error('Error al guardar reactivo')
-            console.error(err)
+            console.error('Error saving inventory item:', err.code, err.message)
+            if (err.code === 'permission-denied') {
+                toast.error('Sin permisos para guardar. Verifica que tienes rol de Administrador y que las reglas de Firestore están desplegadas.')
+            } else {
+                toast.error('Error al guardar: ' + err.message)
+            }
         }
     }
 
-    const addAuditLog = async (action, detail) => {
-        await addDoc(collection(db, 'audit_log'), {
-            userId: user.uid,
-            userName: `${userProfile?.firstName} ${userProfile?.lastName}`.trim(),
-            action: action,
-            detail: detail,
-            page: 'inventario',
-            createdAt: serverTimestamp(),
-        })
+    const handleAuditLog = async (action, detail) => {
+        const finalName = (userProfile?.firstName && userProfile?.lastName) ? `${userProfile.firstName} ${userProfile.lastName}` : (user?.displayName || 'Usuario')
+        const userPhoto = userProfile?.photoURL || user?.photoURL || null
+        await addAuditLog(user.uid, finalName, action, detail, 'inventario', userPhoto)
     }
 
 
@@ -171,13 +181,13 @@ export default function InventoryPage() {
                 type: movementForm.type,
                 amount: movementForm.quantity,
                 userId: user.uid,
-                userName: `${userProfile?.firstName} ${userProfile?.lastName}`,
+                userName: (userProfile?.firstName && userProfile?.lastName) ? `${userProfile.firstName} ${userProfile.lastName}` : (user?.displayName || 'Usuario'),
                 group: selectedItem.group,
                 date: serverTimestamp(),
                 notes: movementForm.notes
             })
 
-            await addAuditLog('inventory_movement', `Registró ${movementForm.type.toLowerCase()} de ${selectedItem.name} (${movementForm.quantity})`)
+            await handleAuditLog('inventory_movement', `Registró ${movementForm.type.toLowerCase()} de ${selectedItem.name} (${movementForm.quantity})`)
             await updatePointsAndLevel(user.uid, 5, userProfile, setUserProfile)
 
             toast.success('Movimiento registrado. +5 pts')
@@ -213,23 +223,53 @@ export default function InventoryPage() {
         <div className="page-container" style={{ paddingBottom: '100px', position: 'relative' }}>
             {/* Header */}
             <div style={{ marginBottom: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <h1 style={{ fontSize: '24px', fontWeight: '800', color: '#1A1A2E' }}>
-                    Inventario {isAdmin && (
-                        <span style={{ fontSize: '14px', marginLeft: '8px' }}>
-                            {viewAllGroups ? 'Global' : `[${userGroup}]`}
-                        </span>
-                    )}
-                    {!isAdmin && <span style={{ color: '#9B72CF', fontWeight: '600', fontSize: '18px', marginLeft: '8px' }}>[{userGroup}]</span>}
-                </h1>
-
+                <div>
+                    <h1 style={{ fontSize: '28px', fontWeight: '900', color: '#1A1A2E', margin: '0 0 4px 0', letterSpacing: '-0.02em' }}>Inventario</h1>
+                    <div style={{ fontSize: '13px', color: '#9B72CF', fontWeight: '700' }}>{selectedGroup}</div>
+                </div>
                 {isAdmin && (
                     <button
-                        onClick={() => setViewAllGroups(!viewAllGroups)}
-                        style={{ background: viewAllGroups ? '#1A1A2E' : '#F1F5F9', color: viewAllGroups ? 'white' : '#1A1A2E', padding: '6px 12px', borderRadius: '12px', fontSize: '12px', fontWeight: 'bold', border: 'none', cursor: 'pointer' }}>
-                        {viewAllGroups ? 'Ver Mi Grupo' : 'Ver Todos'}
+                        onClick={() => {
+                            setItemForm({ name: '', category: 'Reactivos químicos', quantity: 0, unit: 'mL', minStock: 1, location: '', expirationDate: '', group: selectedGroup, notes: '' })
+                            setModalView('add')
+                        }}
+                        style={{
+                            display: 'flex', alignItems: 'center', gap: '6px',
+                            background: '#9B72CF', color: 'white',
+                            border: 'none', borderRadius: '16px',
+                            padding: '10px 20px', fontSize: '14px', fontWeight: '800',
+                            cursor: 'pointer', boxShadow: '0 4px 12px rgba(155,114,207,0.3)'
+                        }}
+                    >
+                        <Plus size={18} />
+                        Agregar ítem
                     </button>
                 )}
             </div>
+
+            {/* Group Selector — Admins only */}
+            {isAdmin && (
+                <div style={{ marginBottom: '20px' }}>
+                    <div style={{ fontSize: '11px', fontWeight: '800', color: '#9CA3AF', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '10px' }}>Grupo de Inventario</div>
+                    <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+                        {['Bioquímica', 'Neurobioquímica', 'Nutrición'].map(g => (
+                            <button
+                                key={g}
+                                onClick={() => setSelectedGroup(g)}
+                                style={{
+                                    padding: '10px 20px', borderRadius: '16px', fontSize: '14px', fontWeight: '800',
+                                    border: 'none', cursor: 'pointer', transition: 'all 0.2s',
+                                    background: selectedGroup === g ? '#1A1A2E' : '#F1F5F9',
+                                    color: selectedGroup === g ? '#FFFFFF' : '#64748B',
+                                    boxShadow: selectedGroup === g ? '0 4px 12px rgba(26,26,46,0.2)' : 'none'
+                                }}
+                            >
+                                {g}
+                            </button>
+                        ))}
+                    </div>
+                </div>
+            )}
 
             {/* Search Bar */}
             <div style={{ position: 'relative', marginBottom: '16px' }}>
@@ -264,8 +304,10 @@ export default function InventoryPage() {
             {/* List */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                 {filteredItems.length === 0 && (
-                    <div style={{ textAlign: 'center', padding: '40px 20px', color: '#64748B' }}>
-                        No se encontraron ítems en esta categoría.
+                    <div style={{ textAlign: 'center', padding: '60px 20px', color: '#64748B' }}>
+                        <div style={{ fontSize: '48px', marginBottom: '12px' }}>🧪</div>
+                        <div style={{ fontWeight: '800', fontSize: '18px', color: '#1A1A2E', marginBottom: '8px' }}>No hay ítems en este inventario</div>
+                        <div style={{ fontSize: '14px', color: '#9CA3AF' }}>{isAdmin ? 'El administrador puede agregar reactivos o materiales a este inventario.' : 'Consulta con tu administrador para agregar ítems.'}</div>
                     </div>
                 )}
                 {filteredItems.map(item => {
@@ -288,8 +330,11 @@ export default function InventoryPage() {
 
                     return (
                         <div key={item.id}
-                            onClick={() => (!isAdmin && viewAllGroups) ? null : setSelectedItem(item)}
-                            className="card" style={{ position: 'relative', overflow: 'hidden', padding: '16px 16px 16px 20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: (!isAdmin && viewAllGroups) ? 'default' : 'pointer' }}>
+                            onClick={() => {
+                                setSelectedItem(item)
+                                setModalView('detail')
+                            }}
+                            className="card" style={{ position: 'relative', overflow: 'hidden', padding: '16px 16px 16px 20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer' }}>
                             <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: '6px', background: borderColor }} />
 
                             <div style={{ flex: 1, overflow: 'hidden' }}>
@@ -322,21 +367,7 @@ export default function InventoryPage() {
                 })}
             </div>
 
-            {/* Floating FAB for new item */}
-            {(!viewAllGroups || isAdmin) && (
-                <button
-                    onClick={() => {
-                        setItemForm({ name: '', category: 'Ácidos', quantity: 0, unit: 'mL', minStock: 1, location: '', expirationDate: '', group: userGroup })
-                        setModalView('add')
-                    }}
-                    style={{
-                        position: 'fixed', bottom: 'calc(var(--bottom-nav-h, 72px) + 16px)', right: '16px', width: '56px', height: '56px',
-                        background: '#9B72CF', color: 'white', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                        boxShadow: '0 4px 16px rgba(155, 114, 207, 0.4)', border: 'none', cursor: 'pointer', zIndex: 110
-                    }}>
-                    <Plus size={28} strokeWidth={2.5} />
-                </button>
-            )}
+
 
             {/* Item Detail Modal */}
             {modalView === 'detail' && selectedItem && (
@@ -372,6 +403,13 @@ export default function InventoryPage() {
                                 <div style={{ fontSize: '14px', fontWeight: '800', color: '#1A1A2E' }}>{selectedItem.minStock} {selectedItem.unit}</div>
                             </div>
                         </div>
+
+                        {selectedItem.notes && (
+                            <div className="card" style={{ padding: '16px', background: '#F8FAFC', border: 'none', marginBottom: '24px' }}>
+                                <div style={{ fontSize: '11px', fontWeight: '700', color: '#64748B', textTransform: 'uppercase', marginBottom: '4px' }}>Notas Adicionales</div>
+                                <div style={{ fontSize: '14px', fontWeight: '600', color: '#1A1A2E', whiteSpace: 'pre-wrap' }}>{selectedItem.notes}</div>
+                            </div>
+                        )}
 
                         {/* Action Buttons */}
                         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '24px' }}>
@@ -483,23 +521,19 @@ export default function InventoryPage() {
                                 <div style={{ flex: 1 }}>
                                     <label style={{ fontSize: '12px', fontWeight: '700', color: '#64748B' }}>Categoría</label>
                                     <select value={itemForm.category} onChange={(e) => setItemForm({ ...itemForm, category: e.target.value })} className="input-field" style={{ background: '#F5F5F5', border: '1px solid #E0E0E0' }}>
-                                        <option>Ácidos</option>
-                                        <option>Bases</option>
-                                        <option>Solventes</option>
-                                        <option>Soluciones Buffer</option>
-                                        <option>Colorantes</option>
-                                        <option>Otros</option>
+                                        <option value="Reactivos químicos">Reactivos químicos</option>
+                                        <option value="Anticuerpos">Anticuerpos</option>
+                                        <option value="Soluciones buffer">Soluciones buffer</option>
+                                        <option value="Kits de análisis">Kits de análisis</option>
+                                        <option value="Enzimas">Enzimas</option>
+                                        <option value="Tubos de ensayo">Tubos de ensayo</option>
+                                        <option value="Placas de cultivo">Placas de cultivo</option>
+                                        <option value="Materiales de laboratorio">Materiales de laboratorio</option>
                                     </select>
                                 </div>
                                 <div style={{ flex: 1 }}>
                                     <label style={{ fontSize: '12px', fontWeight: '700', color: '#64748B' }}>Unidad</label>
-                                    <select value={itemForm.unit} onChange={(e) => setItemForm({ ...itemForm, unit: e.target.value })} className="input-field" style={{ background: '#F5F5F5', border: '1px solid #E0E0E0' }}>
-                                        <option>L</option>
-                                        <option>mL</option>
-                                        <option>kg</option>
-                                        <option>g</option>
-                                        <option>unidades</option>
-                                    </select>
+                                    <input type="text" required value={itemForm.unit} onChange={(e) => setItemForm({ ...itemForm, unit: e.target.value })} className="input-field" placeholder="mL, cajas..." style={{ background: '#F5F5F5', border: '1px solid #E0E0E0' }} />
                                 </div>
                             </div>
                             <div style={{ display: 'flex', gap: '12px' }}>
@@ -519,6 +553,10 @@ export default function InventoryPage() {
                             <div>
                                 <label style={{ fontSize: '12px', fontWeight: '700', color: '#64748B' }}>Fecha de Vencimiento (Opcional)</label>
                                 <input type="date" value={itemForm.expirationDate} onChange={(e) => setItemForm({ ...itemForm, expirationDate: e.target.value })} className="input-field" style={{ background: '#F5F5F5', border: '1px solid #E0E0E0' }} />
+                            </div>
+                            <div>
+                                <label style={{ fontSize: '12px', fontWeight: '700', color: '#64748B' }}>Notas Adicionales (Opcional)</label>
+                                <textarea value={itemForm.notes} onChange={(e) => setItemForm({ ...itemForm, notes: e.target.value })} className="input-field" style={{ background: '#F5F5F5', border: '1px solid #E0E0E0', resize: 'vertical', minHeight: '80px' }} />
                             </div>
 
                             {isAdmin && (

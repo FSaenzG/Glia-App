@@ -83,7 +83,7 @@ export default function App() {
           <Route index element={<Dashboard />} />
           <Route path="reservas" element={<ReservasPage />} />
           <Route path="inventario" element={<InventoryPage />} />
-          <Route path="mi-lab" element={<ProfilePage />} />
+          <Route path="mi-lab" element={<AdminGuard><ProfilePage /></AdminGuard>} />
           <Route path="chatbot" element={<ChatbotPage />} />
           <Route path="damage-report" element={<DamageReportPage />} />
           <Route path="cleaning" element={<CleaningPage />} />

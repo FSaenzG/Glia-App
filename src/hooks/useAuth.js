@@ -163,11 +163,19 @@ export async function resetPassword(email) {
     return sendPasswordResetEmail(auth, email)
 }
 
-export async function addAuditLog(userId, userName, action, detail, page = 'general') {
+export async function addAuditLog(userId, userName, action, detail, page = 'general', userPhoto = null) {
     try {
+        let finalName = userName
+        if (!finalName || finalName.includes('undefined')) {
+            // Try to get current user data if name is missing
+            const user = auth.currentUser
+            finalName = user?.displayName || user?.email || 'Usuario Glia'
+        }
+
         await addDoc(collection(db, 'audit_log'), {
             userId,
-            userName,
+            userName: finalName,
+            userPhoto: userPhoto || auth.currentUser?.photoURL || null,
             action,
             detail,
             page,

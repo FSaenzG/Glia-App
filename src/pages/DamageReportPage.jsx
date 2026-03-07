@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router-dom'
 import { ArrowLeft, Camera, Send, X } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { db } from '../firebase'
-import { collection, addDoc, getDocs, serverTimestamp } from 'firebase/firestore'
+import { collection, addDoc, getDocs, serverTimestamp, doc, updateDoc } from 'firebase/firestore'
 import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage'
 import { useAuthStore } from '../store/authStore'
 import { addAuditLog } from '../hooks/useAuth'
@@ -72,7 +72,7 @@ export default function DamageReportPage() {
                 equipmentId: selectedEq.id,
                 equipmentName: selectedEq.name,
                 userId: user.uid,
-                userName: `${userProfile?.firstName} ${userProfile?.lastName}`,
+                userName: (userProfile?.firstName && userProfile?.lastName) ? `${userProfile.firstName} ${userProfile.lastName}` : (user?.displayName || 'Usuario'),
                 description: description.trim(),
                 severity: severity,
                 status: 'reported',
@@ -80,7 +80,16 @@ export default function DamageReportPage() {
                 reportedAt: serverTimestamp()
             })
 
-            await addAuditLog(user.uid, `${userProfile.firstName} ${userProfile.lastName}`, 'damage_reported', `Reporte de daño en ${selectedEq.name} (${severity})`, 'damage')
+            let auditAction = 'damage_reported'
+            let auditDetail = `Reporte de daño en ${selectedEq.name} (${severity})`
+
+            if (severity === 'high') {
+                await updateDoc(doc(db, 'equipment', selectedEq.id), { status: 'out_of_service' })
+                auditDetail = `Reporte GRAVE en ${selectedEq.name}. Equipo marcado Fuera de servicio.`
+            }
+
+            const finalLogName = (userProfile?.firstName && userProfile?.lastName) ? `${userProfile.firstName} ${userProfile.lastName}` : (user?.displayName || 'Usuario')
+            await addAuditLog(user.uid, finalLogName, auditAction, auditDetail, 'damage')
 
             toast.success('Reporte enviado correctamente. El administrador ha sido notificado.')
 
