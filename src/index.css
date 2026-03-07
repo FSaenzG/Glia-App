@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Playfair+Display:ital,wght@1,700&display=swap');
 
 @tailwind base;
 @tailwind components;
@@ -33,11 +33,11 @@ body {
   z-index: 100;
   background: #FFFFFF;
   border-bottom: 1px solid #F0F0F0;
-  padding: 12px 16px;
+  padding: 16px 16px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  height: 56px;
+  min-height: 72px;
 }
 
 .header-logo {
@@ -396,16 +396,43 @@ body {
   position: fixed;
   bottom: 80px;
   right: 16px;
-  width: 56px;
-  height: 56px;
-  background: #9B72CF;
-  border-radius: 50%;
+  width: 64px;
+  height: 64px;
+  background: transparent;
+  border: none;
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
   z-index: 200;
-  box-shadow: 0 4px 16px rgba(155, 114, 207, 0.4);
+  transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+  animation: glia-float 3s ease-in-out infinite;
+}
+
+.chatbot-button span {
+  font-size: 42px !important;
+  filter: drop-shadow(0 0 10px rgba(155, 114, 207, 0.5));
+  user-select: none;
+}
+
+.chatbot-button:hover {
+  transform: scale(1.25) rotate(15deg);
+}
+
+.chatbot-button:hover span {
+  filter: drop-shadow(0 0 20px rgba(155, 114, 207, 0.8));
+}
+
+@keyframes glia-float {
+
+  0%,
+  100% {
+    transform: translateY(0) rotate(0);
+  }
+
+  50% {
+    transform: translateY(-10px) rotate(-5deg);
+  }
 }
 
 @keyframes pulse-red {
@@ -596,7 +623,7 @@ body {
     height: 100vh;
     overflow: hidden;
   }
-  
+
   .desktop-sidebar {
     display: flex;
     flex-direction: column;
@@ -607,7 +634,7 @@ body {
     flex-shrink: 0;
     z-index: 50;
   }
-  
+
   .sidebar-logo {
     display: flex;
     align-items: center;
@@ -618,7 +645,7 @@ body {
     color: #2D1B5E;
     border-bottom: 1px solid #F5F5F5;
   }
-  
+
   .logo-icon {
     width: 36px;
     height: 36px;
@@ -637,7 +664,7 @@ body {
     padding: 24px 16px;
     overflow-y: auto;
   }
-  
+
   .sidebar-link {
     display: flex;
     align-items: center;
@@ -655,12 +682,12 @@ body {
     width: 100%;
     text-align: left;
   }
-  
+
   .sidebar-link:hover {
     background: #F5F5F5;
     color: #1A1A2E;
   }
-  
+
   .sidebar-link.active {
     background: #F0EBF8;
     color: #9B72CF;
@@ -673,7 +700,7 @@ body {
     flex-direction: column;
     gap: 12px;
   }
-  
+
   .sos-sidebar-btn {
     display: flex;
     align-items: center;
@@ -688,7 +715,7 @@ body {
     cursor: pointer;
     transition: all 0.2s;
   }
-  
+
   .sos-sidebar-btn:hover {
     background: #FFE5E5;
   }
@@ -700,13 +727,14 @@ body {
   .page-container {
     max-width: 1000px;
     padding: 40px;
-    padding-bottom: 80px; /* extra space at bottom */
+    padding-bottom: 80px;
+    /* extra space at bottom */
   }
-  
+
   .lg\:hidden {
     display: none !important;
   }
-  
+
   .lg\:flex {
     display: flex !important;
   }

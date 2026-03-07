@@ -3,7 +3,8 @@ import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../store/authStore'
 import { addAuditLog } from '../hooks/useAuth'
-import { db } from '../firebase'
+import { db, storage } from '../firebase'
+import { ref, uploadBytes, getDownloadURL } from 'firebase/storage'
 import {
     collection, onSnapshot, query, orderBy, limit, addDoc, deleteDoc,
     serverTimestamp, getDocs, doc, updateDoc
@@ -12,10 +13,11 @@ import toast from 'react-hot-toast'
 import {
     Users, Settings, ShieldCheck, Activity, FlaskConical,
     Search, UserPlus, Trash2, X, Key, Briefcase, Plus, Edit2,
-    Shield, ChevronRight
+    Shield, ChevronRight, Camera, Bell
 } from 'lucide-react'
+import { sendNotification } from '../hooks/useNotifications'
 
-const TABS = ['Usuarios', 'Equipos', 'Auditoría', 'Invitaciones', 'Configuración']
+const TABS = ['Usuarios', 'Equipos', 'Mis Publicaciones', 'Auditoría', 'Invitaciones', 'Configuración']
 
 export default function MiLabPage() {
     const navigate = useNavigate()
@@ -38,6 +40,7 @@ export default function MiLabPage() {
     const [labSettings, setLabSettings] = useState({ regulations: '', emergencyProtocol: '' })
 
     const [search, setSearch] = useState('')
+    const [myPosts, setMyPosts] = useState([])
     const [auditStartDate, setAuditStartDate] = useState('')
     const [auditEndDate, setAuditEndDate] = useState('')
 
@@ -79,10 +82,18 @@ export default function MiLabPage() {
             unsubEq = onSnapshot(q, (snap) => {
                 setEquipmentList(snap.docs.map(d => ({ id: d.id, ...d.data() })))
             })
-        } else if (activeTab === 'Invitaciones') {
-            const q = query(collection(db, 'invitations'), orderBy('createdAt', 'desc'))
             unsubInv = onSnapshot(q, (snap) => {
                 setInvitations(snap.docs.map(d => ({ id: d.id, ...d.data() })))
+            })
+        } else if (activeTab === 'Mis Publicaciones') {
+            const q = query(
+                collection(db, 'lab_feed'),
+                where('userId', '==', user.uid),
+                orderBy('createdAt', 'desc'),
+                limit(5)
+            )
+            onSnapshot(q, (snap) => {
+                setMyPosts(snap.docs.map(d => ({ id: d.id, ...d.data() })))
             })
         } else if (activeTab === 'Configuración') {
             unsubSettings = onSnapshot(doc(db, 'settings', 'main'), (snap) => {
@@ -131,12 +142,26 @@ export default function MiLabPage() {
             const certsArray = userEditForm.certificationsText
                 ? userEditForm.certificationsText.split(',').map(c => c.trim()).filter(Boolean)
                 : []
+
+            // Notification logic: find new certifications
+            // We need to know what they had before. If we don't have it in state, we might need to fetch it or skip.
+            // Let's at least notify about the ones currently being added.
+
             await updateDoc(doc(db, 'users', userEditForm.id), {
                 role: userEditForm.role,
                 group: userEditForm.group,
                 isActive: userEditForm.isActive,
                 certifications: certsArray
             })
+
+            // If we are giving them a new cert, we notify. (Simplification: notify all current certs as approved)
+            if (certsArray.length > 0) {
+                await sendNotification(userEditForm.id, {
+                    type: 'cert_approved',
+                    message: `El administrador actualizó tus certificaciones para: ${certsArray.join(', ')}`
+                })
+            }
+
             toast.success('Usuario actualizado')
             setIsUserModalOpen(false)
         } catch (err) {
@@ -149,10 +174,12 @@ export default function MiLabPage() {
         e.preventDefault()
         try {
             await updateDoc(doc(db, 'users', certUserForm.id), { certifications: certUserForm.certifications })
-            for (const cert of certUserForm.certifications) {
-                if (!certUserForm.initialCertifications.includes(cert)) {
-                    await addAuditLog(user.uid, adminName(), 'user_certified', `Certificó a ${certUserForm.firstName} ${certUserForm.lastName} en ${cert}`, 'admin')
-                }
+            const newCerts = certUserForm.certifications.filter(c => !certUserForm.initialCertifications.includes(c))
+            if (newCerts.length > 0) {
+                await sendNotification(certUserForm.id, {
+                    type: 'cert_approved',
+                    message: `El administrador te certificó para usar: ${newCerts.join(', ')}`
+                })
             }
             toast.success('Certificaciones actualizadas')
             setIsCertModalOpen(false)
@@ -171,7 +198,8 @@ export default function MiLabPage() {
                     name: eqForm.name, category: eqForm.category, status: eqForm.status,
                     location: eqForm.location,
                     maintenanceNote: eqForm.status === 'maintenance' ? eqForm.maintenanceNote : '',
-                    returnDate: eqForm.status === 'maintenance' ? eqForm.returnDate : ''
+                    returnDate: eqForm.status === 'maintenance' ? eqForm.returnDate : '',
+                    sortOrder: Number(eqForm.sortOrder || 99)
                 })
                 toast.success('Equipo actualizado')
             } else {
@@ -180,12 +208,13 @@ export default function MiLabPage() {
                     location: eqForm.location,
                     maintenanceNote: eqForm.status === 'maintenance' ? eqForm.maintenanceNote : '',
                     returnDate: eqForm.status === 'maintenance' ? eqForm.returnDate : '',
+                    sortOrder: Number(eqForm.sortOrder || 99),
                     createdAt: serverTimestamp()
                 })
                 toast.success('Equipo añadido')
             }
             setIsEqModalOpen(false)
-            setEqForm({ id: null, name: '', category: 'General', status: 'available', location: '', maintenanceNote: '', returnDate: '' })
+            setEqForm({ id: null, name: '', category: 'General', status: 'available', location: '', maintenanceNote: '', returnDate: '', sortOrder: '' })
         } catch (err) {
             console.error(err)
             toast.error('Error al guardar equipo')
@@ -216,6 +245,32 @@ export default function MiLabPage() {
         }
     }
 
+    const handlePhotoUpload = async (e) => {
+        const file = e.target.files[0]
+        if (!file || !user) return
+
+        if (file.size > 5 * 1024 * 1024) {
+            toast.error('La imagen debe pesar menos de 5MB')
+            return
+        }
+
+        const toastId = toast.loading('Subiendo foto...')
+        try {
+            const storageRef = ref(storage, `profile-photos/${user.uid}`)
+            await uploadBytes(storageRef, file)
+            const downloadURL = await getDownloadURL(storageRef)
+
+            await updateDoc(doc(db, 'users', user.uid), {
+                photoURL: downloadURL
+            })
+
+            toast.success('Foto actualizada', { id: toastId })
+        } catch (error) {
+            console.error(error)
+            toast.error('Error al subir la imagen', { id: toastId })
+        }
+    }
+
     const filteredUsers = usersList.filter(u => {
         const name = `${u.firstName || ''} ${u.lastName || ''}`.toLowerCase()
         const term = search.toLowerCase()
@@ -239,12 +294,55 @@ export default function MiLabPage() {
     return (
         <div className="page-container" style={{ paddingBottom: '100px' }}>
             {/* Header */}
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '24px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                    <Shield size={24} color="#9B72CF" />
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', marginBottom: '32px', textAlign: 'center' }}>
+                <div style={{ position: 'relative', marginBottom: '16px' }}>
+                    <div style={{
+                        width: '80px',
+                        height: '80px',
+                        borderRadius: '50%',
+                        background: '#F0EBF8',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        overflow: 'hidden',
+                        border: '3px solid white',
+                        boxShadow: '0 4px 12px rgba(0,0,0,0.1)'
+                    }}>
+                        {userProfile?.photoURL ? (
+                            <img src={userProfile.photoURL} alt="Profile" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                        ) : (
+                            <span style={{ fontSize: '32px', fontWeight: '800', color: '#9B72CF' }}>
+                                {(userProfile?.firstName || 'U').charAt(0).toUpperCase()}
+                            </span>
+                        )}
+                    </div>
+                    <label style={{
+                        position: 'absolute',
+                        bottom: '0',
+                        right: '0',
+                        background: '#9B72CF',
+                        color: 'white',
+                        width: '28px',
+                        height: '28px',
+                        borderRadius: '50%',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        cursor: 'pointer',
+                        boxShadow: '0 2px 6px rgba(0,0,0,0.2)',
+                        border: '2px solid white'
+                    }}>
+                        <Camera size={14} />
+                        <input type="file" accept="image/png, image/jpeg, image/webp" style={{ display: 'none' }} onChange={handlePhotoUpload} />
+                    </label>
+                </div>
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <Shield size={20} color="#9B72CF" />
                     <h1 style={{ fontSize: '24px', fontWeight: '800', color: '#1A1A2E', margin: 0 }}>Mi Lab</h1>
                     <span style={{ background: '#F0EBF8', color: '#9B72CF', padding: '4px 10px', borderRadius: '12px', fontSize: '11px', fontWeight: '800' }}>ADMIN</span>
                 </div>
+                <p style={{ fontSize: '14px', color: '#666', marginTop: '4px' }}>Control de acceso y configuración del sistema</p>
             </div>
 
             {/* Tabs */}
@@ -322,6 +420,21 @@ export default function MiLabPage() {
                                         <ShieldCheck size={20} />
                                     </button>
                                     <button
+                                        onClick={async () => {
+                                            if (window.confirm(`¿Notificar aseo a ${u.firstName}?`)) {
+                                                await sendNotification(u.id, {
+                                                    type: 'cleaning_duty',
+                                                    message: 'Te corresponde aseo esta semana'
+                                                })
+                                                toast.success('Notificación de aseo enviada')
+                                            }
+                                        }}
+                                        style={{ background: 'none', border: 'none', color: '#007AFF', cursor: 'pointer', padding: '8px' }}
+                                        title="Notificar aseo"
+                                    >
+                                        <Bell size={20} />
+                                    </button>
+                                    <button
                                         onClick={() => {
                                             setUserEditForm({ id: u.id, role: u.role || 'usuario', group: u.group || 'Bioquímica', isActive: u.isActive !== false, certificationsText: (u.certifications || []).join(', ') })
                                             setIsUserModalOpen(true)
@@ -364,12 +477,50 @@ export default function MiLabPage() {
                                     </div>
                                 </div>
                                 <div style={{ display: 'flex', gap: '8px' }}>
-                                    <button onClick={() => { setEqForm({ id: eq.id, name: eq.name, category: eq.category || 'General', status: eq.status, location: eq.location, maintenanceNote: eq.maintenanceNote || '', returnDate: eq.returnDate || '' }); setIsEqModalOpen(true) }} style={{ background: '#F5F5F5', color: '#666', padding: '8px', borderRadius: '12px', border: 'none', cursor: 'pointer' }}><Edit2 size={18} /></button>
+                                    <button onClick={() => { setEqForm({ id: eq.id, name: eq.name, category: eq.category || 'General', status: eq.status, location: eq.location, maintenanceNote: eq.maintenanceNote || '', returnDate: eq.returnDate || '', sortOrder: eq.sortOrder || '' }); setIsEqModalOpen(true) }} style={{ background: '#F5F5F5', color: '#666', padding: '8px', borderRadius: '12px', border: 'none', cursor: 'pointer' }}><Edit2 size={18} /></button>
                                     <button onClick={() => handleDeleteEquipment(eq.id, eq.name)} style={{ background: '#FFF0EF', color: '#FF3B30', padding: '8px', borderRadius: '12px', border: 'none', cursor: 'pointer' }}><Trash2 size={18} /></button>
                                 </div>
                             </div>
                         ))}
                         {equipmentList.length === 0 && <div style={{ textAlign: 'center', padding: '40px', color: '#9CA3AF' }}>No hay equipos registrados.</div>}
+                    </div>
+                </section>
+            )}
+
+            {/* ===== MIS PUBLICACIONES TAB ===== */}
+            {activeTab === 'Mis Publicaciones' && (
+                <section style={{ animation: 'fadeIn 0.3s ease-out' }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                        {myPosts.length === 0 ? (
+                            <div style={{ textAlign: 'center', padding: '40px', color: '#9CA3AF' }}>No has realizado ninguna publicación aún.</div>
+                        ) : (
+                            myPosts.map(post => (
+                                <div key={post.id} className="card" style={{ padding: '16px' }}>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '8px' }}>
+                                        <span style={{ fontSize: '11px', color: '#9CA3AF', fontWeight: '800' }}>
+                                            {post.createdAt?.toDate() ? post.createdAt.toDate().toLocaleDateString('es-CO', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Reciente'}
+                                        </span>
+                                        <button
+                                            onClick={async () => {
+                                                if (window.confirm('¿Eliminar esta publicación?')) {
+                                                    await deleteDoc(doc(db, 'lab_feed', post.id));
+                                                    toast.success('Publicación eliminada');
+                                                }
+                                            }}
+                                            style={{ background: 'none', border: 'none', color: '#FF3B30', cursor: 'pointer' }}
+                                        >
+                                            <Trash2 size={16} />
+                                        </button>
+                                    </div>
+                                    <p style={{ fontSize: '14px', color: '#1A1A2E', fontWeight: '600', margin: '0 0 10px 0', lineHeight: '1.4' }}>{post.text}</p>
+                                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+                                        {post.equipmentUsed?.map((eq, i) => (
+                                            <span key={i} style={{ fontSize: '9px', fontWeight: '800', background: '#F0EBF8', color: '#9B72CF', padding: '2px 6px', borderRadius: '4px' }}>{eq}</span>
+                                        ))}
+                                    </div>
+                                </div>
+                            ))
+                        )}
                     </div>
                 </section>
             )}
@@ -463,6 +614,8 @@ export default function MiLabPage() {
                                 <label style={{ fontSize: '13px', fontWeight: '800', color: '#1A1A2E', marginBottom: '8px', display: 'block' }}>Rol</label>
                                 <select value={inviteForm.role} onChange={e => setInviteForm({ ...inviteForm, role: e.target.value })} className="input-field" style={{ background: '#F5F5F5', border: '1px solid #E0E0E0' }}>
                                     <option value="usuario">Usuario</option>
+                                    <option value="estudiante">Estudiante</option>
+                                    <option value="profesor">Profesor</option>
                                     <option value="admin">Administrador</option>
                                 </select>
                             </div>
@@ -493,6 +646,8 @@ export default function MiLabPage() {
                                 <label style={{ fontSize: '13px', fontWeight: '800', color: '#1A1A2E', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '6px' }}><Key size={16} color="#9B72CF" /> Rol</label>
                                 <select value={userEditForm.role} onChange={e => setUserEditForm({ ...userEditForm, role: e.target.value })} className="input-field" style={{ background: '#F5F5F5', border: '1px solid #E0E0E0' }}>
                                     <option value="usuario">Usuario</option>
+                                    <option value="estudiante">Estudiante</option>
+                                    <option value="profesor">Profesor</option>
                                     <option value="admin">Administrador</option>
                                 </select>
                             </div>
@@ -584,6 +739,10 @@ export default function MiLabPage() {
                         </div>
                         <form onSubmit={handleSaveEquipment} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
                             <div><label style={{ fontSize: '13px', fontWeight: '800', color: '#1A1A2E', marginBottom: '8px', display: 'block' }}>Nombre del Equipo</label><input type="text" required value={eqForm.name} onChange={e => setEqForm({ ...eqForm, name: e.target.value })} className="input-field" style={{ background: '#F5F5F5', border: '1px solid #E0E0E0' }} /></div>
+                            <div>
+                                <label style={{ fontSize: '13px', fontWeight: '800', color: '#1A1A2E', marginBottom: '8px', display: 'block' }}>Orden de Aparición (1-10)</label>
+                                <input type="number" value={eqForm.sortOrder} onChange={e => setEqForm({ ...eqForm, sortOrder: e.target.value })} className="input-field" style={{ background: '#F5F5F5', border: '1px solid #E0E0E0' }} placeholder="Ej. 1" />
+                            </div>
                             <div><label style={{ fontSize: '13px', fontWeight: '800', color: '#1A1A2E', marginBottom: '8px', display: 'block' }}>Categoría</label><input type="text" value={eqForm.category} onChange={e => setEqForm({ ...eqForm, category: e.target.value })} className="input-field" style={{ background: '#F5F5F5', border: '1px solid #E0E0E0' }} placeholder="Ej. Microscopía" /></div>
                             <div>
                                 <label style={{ fontSize: '13px', fontWeight: '800', color: '#1A1A2E', marginBottom: '8px', display: 'block' }}>Estado</label>

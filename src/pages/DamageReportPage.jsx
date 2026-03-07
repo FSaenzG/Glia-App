@@ -8,6 +8,8 @@ import { collection, addDoc, getDocs, serverTimestamp, doc, updateDoc } from 'fi
 import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage'
 import { useAuthStore } from '../store/authStore'
 import { addAuditLog } from '../hooks/useAuth'
+import { sendNotification } from '../hooks/useNotifications'
+import { query, where, getDocs as getDocsQuery } from 'firebase/firestore'
 
 export default function DamageReportPage() {
     const navigate = useNavigate()
@@ -90,6 +92,20 @@ export default function DamageReportPage() {
 
             const finalLogName = (userProfile?.firstName && userProfile?.lastName) ? `${userProfile.firstName} ${userProfile.lastName}` : (user?.displayName || 'Usuario')
             await addAuditLog(user.uid, finalLogName, auditAction, auditDetail, 'damage')
+
+            // Notify Admins and Profesors
+            try {
+                const adminsSnap = await getDocsQuery(query(collection(db, 'users'), where('role', 'in', ['admin', 'profesor'])))
+                const notifyPromises = adminsSnap.docs.map(adminDoc =>
+                    sendNotification(adminDoc.id, {
+                        type: 'damage_report',
+                        message: `${finalLogName} reportó daño en ${selectedEq.name}`
+                    })
+                )
+                await Promise.allSettled(notifyPromises)
+            } catch (err) {
+                console.warn('Could not notify admins:', err)
+            }
 
             toast.success('Reporte enviado correctamente. El administrador ha sido notificado.')
 

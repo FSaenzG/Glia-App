@@ -2,7 +2,7 @@
 import { useState, useEffect } from 'react'
 import { db } from '../firebase'
 import {
-    collection, onSnapshot, query, orderBy, limit, addDoc, serverTimestamp, getDocs, deleteDoc, doc, updateDoc
+    collection, onSnapshot, query, orderBy, limit, addDoc, serverTimestamp, getDocs, deleteDoc, doc, updateDoc, setDoc
 } from 'firebase/firestore'
 import { useAuthStore } from '../store/authStore'
 import { addAuditLog } from '../hooks/useAuth'
@@ -226,10 +226,9 @@ export default function AdminPanel() {
             const settingsRef = doc(db, 'settings', 'main')
             // Using updateDoc directly might fail if document doesn't exist, handle nicely
             try {
-                await updateDoc(settingsRef, labSettings)
+                await setDoc(settingsRef, labSettings)
             } catch (err) {
-                // If it doesn't exist, create it (a trick without importing setDoc)
-                await db.collection('settings').doc('main').set(labSettings)
+                console.error(err)
             }
             toast.success('Configuración guardada')
         } catch (err) {

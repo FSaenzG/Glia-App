@@ -6,6 +6,8 @@ import { collection, onSnapshot, query, where, orderBy, addDoc, updateDoc, doc, 
 import { Search, ChevronRight, Plus, X, Minus, Trash2, FileText, ArrowUpRight, ArrowDownRight, Edit2, Upload, History } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { addAuditLog } from '../hooks/useAuth'
+import { sendNotification } from '../hooks/useNotifications'
+import { query as fsQuery, where as fsWhere, getDocs as fsGetDocs } from 'firebase/firestore'
 
 const updatePointsAndLevel = async (userId, pointsToAdd, userProfile, setUserProfile) => {
     try {
@@ -41,7 +43,8 @@ export default function InventoryPage() {
     const [selectedItemHistory, setSelectedItemHistory] = useState([])
 
     // Movement Form
-    const [movementForm, setMovementForm] = useState({ type: 'Entrada', quantity: 1, notes: '' })
+    const [movementForm, setMovementForm] = useState({ type: 'Entrada', quantity: 1, notes: '', projectId: '' })
+    const [projects, setProjects] = useState([])
 
     // Add/Edit Form states
     const [itemForm, setItemForm] = useState({ name: '', category: 'Reactivos químicos', quantity: 0, unit: 'mL', minStock: 1, location: '', expirationDate: '', group: '', notes: '' })
@@ -60,8 +63,19 @@ export default function InventoryPage() {
     }, [userProfile?.group])
 
     useEffect(() => {
+        if (!user) return
+        const q = query(collection(db, 'projects'))
+        const unsub = onSnapshot(q, (snap) => {
+            const allProj = snap.docs.map(d => ({ id: d.id, ...d.data() }))
+            const myProj = allProj.filter(p => p.ownerId === user.uid || (p.collaborators || []).find(c => c.uid === user.uid))
+            setProjects(myProj)
+        })
+        return unsub
+    }, [user])
+
+    useEffect(() => {
         if (!selectedGroup) return
-        const q = query(collection(db, 'inventory'), where('group', '==', selectedGroup))
+        const q = query(collection(db, 'inventory', selectedGroup, 'reagents'))
 
         const unsub = onSnapshot(q, (snap) => {
             const data = snap.docs.map(d => ({ id: d.id, ...d.data() }))
@@ -92,16 +106,75 @@ export default function InventoryPage() {
         }
     }, [selectedItem, modalView])
 
+    const duplicates = inventory.filter((item, index) =>
+        inventory.findIndex(i => i.name.toLowerCase().trim() === item.name.toLowerCase().trim()) !== index
+    )
+
+    const handleConsolidate = async () => {
+        if (!isAdmin || duplicates.length === 0) return
+        const confirmMerge = window.confirm(`Se detectaron ${duplicates.length} duplicados. ¿Deseas fusionarlos todos sumando sus stocks?`)
+        if (!confirmMerge) return
+
+        const loadingToast = toast.loading('Fusionando registros...')
+        try {
+            const batch = writeBatch(db)
+            const uniqueMap = {}
+
+            inventory.forEach(item => {
+                const key = item.name.toLowerCase().trim()
+                if (!uniqueMap[key]) {
+                    uniqueMap[key] = { ...item, idsToDelete: [] }
+                } else {
+                    uniqueMap[key].quantity += (item.quantity || 0)
+                    uniqueMap[key].idsToDelete.push(item.id)
+                }
+            })
+
+            for (const key in uniqueMap) {
+                const master = uniqueMap[key]
+                if (master.idsToDelete.length > 0) {
+                    // Update master
+                    batch.update(doc(db, 'inventory', selectedGroup, 'reagents', master.id), {
+                        quantity: master.quantity,
+                        updatedAt: serverTimestamp(),
+                        name: master.name.charAt(0).toUpperCase() + master.name.slice(1).toLowerCase() // Normalize on merge
+                    })
+                    // Delete clones
+                    master.idsToDelete.forEach(id => {
+                        batch.delete(doc(db, 'inventory', selectedGroup, 'reagents', id))
+                    })
+                }
+            }
+
+            await batch.commit()
+            toast.success('¡Inventario consolidado con éxito!', { id: loadingToast })
+        } catch (err) {
+            console.error(err)
+            toast.error('Error al consolidar duplicados.', { id: loadingToast })
+        }
+    }
+
     const handleSaveItem = async (e) => {
         e.preventDefault()
         if (!user) return
 
         const targetGroup = itemForm.group || userGroup
+        const trimmedName = itemForm.name.trim()
+        const formattedName = trimmedName.charAt(0).toUpperCase() + trimmedName.slice(1).toLowerCase()
 
         try {
             if (modalView === 'add') {
-                const docRef = await addDoc(collection(db, 'inventory'), {
+                const invSnap = await getDocs(collection(db, 'inventory', targetGroup, 'reagents'))
+                const duplicateDoc = invSnap.docs.find(d => d.data().name?.trim().toLowerCase() === formattedName.toLowerCase())
+
+                if (duplicateDoc) {
+                    toast.error(`❌ El reactivo "${formattedName}" ya existe en este grupo. Por favor edita la entrada existente.`)
+                    return
+                }
+
+                const docRef = await addDoc(collection(db, 'inventory', targetGroup, 'reagents'), {
                     ...itemForm,
+                    name: formattedName,
                     group: targetGroup,
                     quantity: Number(itemForm.quantity),
                     minStock: Number(itemForm.minStock),
@@ -110,7 +183,7 @@ export default function InventoryPage() {
 
                 await addDoc(collection(db, 'inventory_movements'), {
                     reagentId: docRef.id,
-                    reagentName: itemForm.name,
+                    reagentName: formattedName,
                     type: 'Entrada Inicial',
                     amount: Number(itemForm.quantity),
                     userId: user.uid,
@@ -120,11 +193,18 @@ export default function InventoryPage() {
                     notes: 'Inventario inicial'
                 })
 
-                await handleAuditLog('inventory_created', `Registró reactivo: ${itemForm.name}`)
+                await handleAuditLog('inventory_created', `Registró reactivo: ${formattedName}`)
                 toast.success('Reactivo guardado en inventario.')
             } else if (modalView === 'edit') {
-                await updateDoc(doc(db, 'inventory', selectedItem.id), {
+                const duplicateDoc = inventory.find(i => i.name.trim().toLowerCase() === formattedName.toLowerCase() && i.id !== selectedItem.id)
+                if (duplicateDoc) {
+                    toast.error(`❌ El reactivo "${formattedName}" ya existe en este grupo.`)
+                    return
+                }
+
+                await updateDoc(doc(db, 'inventory', targetGroup, 'reagents', selectedItem.id), {
                     ...itemForm,
+                    name: formattedName,
                     group: targetGroup,
                     quantity: Number(itemForm.quantity),
                     minStock: Number(itemForm.minStock)
@@ -170,7 +250,7 @@ export default function InventoryPage() {
             if (newQuantity <= selectedItem.minStock * 0.5) newStatus = 'critical'
             else if (newQuantity <= selectedItem.minStock) newStatus = 'low'
 
-            await updateDoc(doc(db, 'inventory', selectedItem.id), {
+            await updateDoc(doc(db, 'inventory', selectedItem.group, 'reagents', selectedItem.id), {
                 quantity: newQuantity,
                 status: newStatus
             })
@@ -184,11 +264,29 @@ export default function InventoryPage() {
                 userName: (userProfile?.firstName && userProfile?.lastName) ? `${userProfile.firstName} ${userProfile.lastName}` : (user?.displayName || 'Usuario'),
                 group: selectedItem.group,
                 date: serverTimestamp(),
-                notes: movementForm.notes
+                notes: movementForm.notes,
+                projectId: movementForm.projectId || null,
+                projectName: projects.find(p => p.id === movementForm.projectId)?.name || null
             })
 
             await handleAuditLog('inventory_movement', `Registró ${movementForm.type.toLowerCase()} de ${selectedItem.name} (${movementForm.quantity})`)
             await updatePointsAndLevel(user.uid, 5, userProfile, setUserProfile)
+
+            // Low Stock Notification
+            if (newQuantity <= selectedItem.minStock) {
+                try {
+                    const adminsSnap = await fsGetDocs(fsQuery(collection(db, 'users'), fsWhere('role', 'in', ['admin', 'profesor'])))
+                    const notifyPromises = adminsSnap.docs.map(adminDoc =>
+                        sendNotification(adminDoc.id, {
+                            type: 'low_stock',
+                            message: `Stock bajo: ${selectedItem.name} tiene ${newQuantity} ${selectedItem.unit} restantes`
+                        })
+                    )
+                    await Promise.allSettled(notifyPromises)
+                } catch (err) {
+                    console.warn('Could not notify low stock:', err)
+                }
+            }
 
             toast.success('Movimiento registrado. +5 pts')
             setModalView(null)
@@ -227,24 +325,41 @@ export default function InventoryPage() {
                     <h1 style={{ fontSize: '28px', fontWeight: '900', color: '#1A1A2E', margin: '0 0 4px 0', letterSpacing: '-0.02em' }}>Inventario</h1>
                     <div style={{ fontSize: '13px', color: '#9B72CF', fontWeight: '700' }}>{selectedGroup}</div>
                 </div>
-                {isAdmin && (
-                    <button
-                        onClick={() => {
-                            setItemForm({ name: '', category: 'Reactivos químicos', quantity: 0, unit: 'mL', minStock: 1, location: '', expirationDate: '', group: selectedGroup, notes: '' })
-                            setModalView('add')
-                        }}
-                        style={{
-                            display: 'flex', alignItems: 'center', gap: '6px',
-                            background: '#9B72CF', color: 'white',
-                            border: 'none', borderRadius: '16px',
-                            padding: '10px 20px', fontSize: '14px', fontWeight: '800',
-                            cursor: 'pointer', boxShadow: '0 4px 12px rgba(155,114,207,0.3)'
-                        }}
-                    >
-                        <Plus size={18} />
-                        Agregar ítem
-                    </button>
-                )}
+                <div style={{ display: 'flex', gap: '10px' }}>
+                    {isAdmin && duplicates.length > 0 && (
+                        <button
+                            onClick={handleConsolidate}
+                            style={{
+                                display: 'flex', alignItems: 'center', gap: '6px',
+                                background: '#EF4444', color: 'white',
+                                border: 'none', borderRadius: '16px',
+                                padding: '10px 20px', fontSize: '14px', fontWeight: '800',
+                                cursor: 'pointer', boxShadow: '0 4px 12px rgba(239,68,68,0.3)'
+                            }}
+                        >
+                            <Trash2 size={18} />
+                            Fusionar Duplicados ({duplicates.length})
+                        </button>
+                    )}
+                    {isAdmin && (
+                        <button
+                            onClick={() => {
+                                setItemForm({ name: '', category: 'Reactivos químicos', quantity: 0, unit: 'mL', minStock: 1, location: '', expirationDate: '', group: selectedGroup, notes: '' })
+                                setModalView('add')
+                            }}
+                            style={{
+                                display: 'flex', alignItems: 'center', gap: '6px',
+                                background: '#9B72CF', color: 'white',
+                                border: 'none', borderRadius: '16px',
+                                padding: '10px 20px', fontSize: '14px', fontWeight: '800',
+                                cursor: 'pointer', boxShadow: '0 4px 12px rgba(155,114,207,0.3)'
+                            }}
+                        >
+                            <Plus size={18} />
+                            Agregar ítem
+                        </button>
+                    )}
+                </div>
             </div>
 
             {/* Group Selector — Admins only */}
@@ -496,6 +611,20 @@ export default function InventoryPage() {
                                 <label style={{ fontSize: '12px', fontWeight: '700', color: '#64748B' }}>Notas / Motivo</label>
                                 <input type="text" value={movementForm.notes} onChange={(e) => setMovementForm({ ...movementForm, notes: e.target.value })} className="input-field" placeholder="Ej. Práctica 1, Reabastecimiento..." style={{ background: '#F5F5F5', border: '1px solid #E0E0E0' }} />
                             </div>
+                            {projects.length > 0 && (
+                                <div>
+                                    <label style={{ fontSize: '11px', fontWeight: '800', color: '#94A3B8', textTransform: 'uppercase', marginBottom: '8px', display: 'block' }}>Vincular a Proyecto (Opcional)</label>
+                                    <select
+                                        value={movementForm.projectId}
+                                        onChange={e => setMovementForm({ ...movementForm, projectId: e.target.value })}
+                                        className="input-field"
+                                        style={{ background: '#F5F5F5', border: '1px solid #E0E0E0' }}
+                                    >
+                                        <option value="">Ninguno</option>
+                                        {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                                    </select>
+                                </div>
+                            )}
                             <button type="submit" style={{ marginTop: '8px', padding: '16px', borderRadius: '16px', border: 'none', background: '#9B72CF', color: 'white', fontSize: '15px', fontWeight: '800', cursor: 'pointer', boxShadow: '0 4px 12px rgba(155,114,207,0.3)' }}>
                                 Confirmar Movimiento
                             </button>

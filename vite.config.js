@@ -28,6 +28,7 @@ export default defineConfig({
         ]
       },
       workbox: {
+        maximumFileSizeToCacheInBytes: 5 * 1024 * 1024, // 5 MB
         // Bust old precaches on every deploy
         cleanupOutdatedCaches: true,
         // Activate new SW immediately without waiting for all tabs to close

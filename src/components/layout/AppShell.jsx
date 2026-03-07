@@ -8,7 +8,7 @@ import { db } from '../../firebase'
 import toast from 'react-hot-toast'
 import {
     Home, Calendar, FlaskConical,
-    Bot, AlertTriangle, LogOut, Shield
+    Bot, AlertTriangle, LogOut, Shield, Wrench, Download, BookOpen, Share2, Layout, Heart, Activity
 } from 'lucide-react'
 
 // Components
@@ -21,11 +21,49 @@ export default function AppShell() {
     const location = useLocation()
     const [chatOpen, setChatOpen] = useState(false)
     const [currentTime, setCurrentTime] = useState(new Date())
+    const [installPrompt, setInstallPrompt] = useState(null)
+    const [isInstalled, setIsInstalled] = useState(false)
 
     useEffect(() => {
         const timer = setInterval(() => setCurrentTime(new Date()), 1000)
-        return () => clearInterval(timer)
+
+        // Check if already installed
+        if (window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone) {
+            setIsInstalled(true)
+        }
+
+        // Listen for the custom event from main.jsx
+        const handlePrompt = () => {
+            setInstallPrompt(window.deferredPrompt)
+        }
+
+        // If it was already set before this effect runs
+        if (window.deferredPrompt) {
+            setInstallPrompt(window.deferredPrompt)
+        }
+
+        window.addEventListener('pwa-prompt-available', handlePrompt)
+        window.addEventListener('appinstalled', () => {
+            setIsInstalled(true)
+            setInstallPrompt(null)
+            window.deferredPrompt = null
+        })
+
+        return () => {
+            clearInterval(timer)
+            window.removeEventListener('pwa-prompt-available', handlePrompt)
+        }
     }, [])
+
+    const handleInstallClick = async () => {
+        if (!installPrompt) return
+        installPrompt.prompt()
+        const { outcome } = await installPrompt.userChoice
+        if (outcome === 'accepted') {
+            setInstallPrompt(null)
+            window.deferredPrompt = null
+        }
+    }
 
     useEffect(() => {
         if (user) {
@@ -52,6 +90,12 @@ export default function AppShell() {
         { to: '/', icon: Home, label: 'Inicio' },
         { to: '/reservas', icon: Calendar, label: 'Reservas' },
         { to: '/inventario', icon: FlaskConical, label: 'Inventario' },
+        { to: '/equipos', icon: Wrench, label: 'Equipos' },
+        { to: '/documentos', icon: BookOpen, label: 'Biblioteca' },
+        { to: '/feed', icon: Share2, label: 'Lab Feed' },
+        { to: '/proyectos', icon: Layout, label: 'Proyectos' },
+        { to: '/animales', icon: Heart, label: 'Bienestar' },
+        { to: '/estadisticas', icon: Activity, label: 'Actividad' },
         ...(userProfile?.role === 'admin' ? [{ to: '/mi-lab', icon: Shield, label: 'Mi Lab' }] : []),
     ]
 
@@ -68,11 +112,14 @@ export default function AppShell() {
         <div className="app-layout">
             {/* Desktop Sidebar */}
             <aside className="desktop-sidebar">
-                <div className="sidebar-logo">
-                    <div className="logo-icon">
-                        <FlaskConical size={24} color="white" />
+                <div className="sidebar-logo" style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: '4px', padding: '24px 16px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                        <div className="logo-icon">
+                            <FlaskConical size={20} color="white" />
+                        </div>
+                        <span style={{ fontFamily: "'Playfair Display', serif", fontWeight: '700', fontStyle: 'italic', fontSize: '24px', color: '#9B72CF' }}>Glia</span>
                     </div>
-                    <span>Glia CRM</span>
+                    <span style={{ fontSize: '7px', fontFamily: 'Manrope, sans-serif', fontWeight: '800', color: '#9B72CF', letterSpacing: '1px', lineHeight: '1.2' }}>PONTIFICIA UNIVERSIDAD JAVERIANA<br />FACULTAD DE CIENCIAS</span>
                 </div>
 
                 <nav className="sidebar-nav">
@@ -98,12 +145,25 @@ export default function AppShell() {
             {/* Main Area */}
             <div className="main-area">
                 {/* Sticky Header */}
-                <div className="header">
-                    <div className="header-logo lg:hidden" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        <div style={{ background: '#9a72cf', width: '32px', height: '32px', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                            <FlaskConical size={20} color="white" />
+                <div className="header" style={{ height: 'auto', padding: '12px 16px' }}>
+                    <div className="header-logo lg:hidden" style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: '2px', padding: '4px 0' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <div style={{ background: '#9a72cf', width: '28px', height: '28px', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                <FlaskConical size={18} color="white" />
+                            </div>
+                            <span style={{ fontFamily: "'Playfair Display', serif", fontWeight: '700', fontStyle: 'italic', fontSize: '24px', color: '#9B72CF' }}>Glia</span>
                         </div>
-                        Glia
+                        <span style={{
+                            fontSize: '9px',
+                            fontFamily: 'Manrope, sans-serif',
+                            fontWeight: '800',
+                            color: '#9B72CF',
+                            letterSpacing: '1.5px',
+                            textTransform: 'uppercase',
+                            marginTop: '2px'
+                        }}>
+                            PONTIFICIA UNIVERSIDAD JAVERIANA · FACULTAD DE CIENCIAS
+                        </span>
                     </div>
 
                     {/* Desktop header left content */}
@@ -118,7 +178,29 @@ export default function AppShell() {
                         <span style={{ fontSize: '12px', background: '#F0EBF8', color: '#9B72CF', padding: '3px 8px', borderRadius: '8px', fontWeight: '800' }}>{group}</span>
                     </div>
 
-                    <div className="header-icons ml-auto" style={{ marginLeft: 'auto' }}>
+                    <div className="header-icons ml-auto" style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        {installPrompt && !isInstalled && (
+                            <button
+                                onClick={handleInstallClick}
+                                className="install-app-btn"
+                                style={{
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '6px',
+                                    background: '#9B72CF',
+                                    color: 'white',
+                                    border: 'none',
+                                    borderRadius: '12px',
+                                    padding: '6px 12px',
+                                    fontSize: '12px',
+                                    fontWeight: '800',
+                                    cursor: 'pointer',
+                                    boxShadow: '0 2px 8px rgba(155,114,207,0.3)'
+                                }}
+                            >
+                                <Download size={16} /> Instalar
+                            </button>
+                        )}
                         <NotificationsDropdown />
                         <div className="header-icon lg:hidden" onClick={handleLogout}>
                             <LogOut size={20} color="#1A1A1A" />
@@ -147,12 +229,32 @@ export default function AppShell() {
                     onClick={() => setChatOpen(true)}
                     title="Glia AI Chatbot"
                 >
-                    <Bot size={28} color="white" />
+                    <span>🧬</span>
                 </button>
             )}
 
             {/* Chat Overlay */}
             <ChatDrawer isOpen={chatOpen} onClose={() => setChatOpen(false)} />
+
+            {/* Design Credit */}
+            <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '4px',
+                paddingBottom: '8px',
+                position: 'fixed',
+                bottom: '64px',
+                left: '0',
+                right: '0',
+                zIndex: 90,
+                pointerEvents: 'none',
+                maxWidth: '480px',
+                margin: '0 auto'
+            }}>
+                <span style={{ fontSize: '10px', color: '#BBBBBB', fontFamily: 'Manrope, sans-serif' }}>Designed by</span>
+                <span style={{ fontSize: '11px', color: '#9B72CF', fontFamily: "'Playfair Display', serif", fontWeight: '700', fontStyle: 'italic' }}>Effe</span>
+            </div>
 
             {/* Bottom Navigation */}
             <nav className="bottom-nav lg:hidden">

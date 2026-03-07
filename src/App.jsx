@@ -24,6 +24,13 @@ import DamageReportPage from './pages/DamageReportPage'
 import CleaningPage from './pages/CleaningPage'
 import AdminPanel from './pages/AdminPanel'
 import SOSEmergencyPage from './pages/SOSEmergencyPage'
+import Equipos from './pages/Equipos'
+import Documentos from './pages/Documentos'
+import LabFeed from './pages/LabFeed'
+import EquipoPerfil from './pages/EquipoPerfil'
+import Proyectos from './pages/Proyectos'
+import Animales from './pages/Animales'
+import Estadisticas from './pages/Estadisticas'
 
 function AuthGate({ children }) {
   const { user, userProfile, loading } = useAuthStore()
@@ -83,6 +90,13 @@ export default function App() {
           <Route index element={<Dashboard />} />
           <Route path="reservas" element={<ReservasPage />} />
           <Route path="inventario" element={<InventoryPage />} />
+          <Route path="equipos" element={<Equipos />} />
+          <Route path="equipos/:id" element={<EquipoPerfil />} />
+          <Route path="documentos" element={<Documentos />} />
+          <Route path="feed" element={<LabFeed />} />
+          <Route path="proyectos" element={<Proyectos />} />
+          <Route path="animales" element={<Animales />} />
+          <Route path="estadisticas" element={<Estadisticas />} />
           <Route path="mi-lab" element={<AdminGuard><ProfilePage /></AdminGuard>} />
           <Route path="chatbot" element={<ChatbotPage />} />
           <Route path="damage-report" element={<DamageReportPage />} />

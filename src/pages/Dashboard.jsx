@@ -80,63 +80,59 @@ export default function Dashboard() {
         return unsub
     }, [user?.uid])
 
-    // Fetch audit log + stock alerts (less frequently, not real-time needed)
+    // Combined Activity Feed (Audit Logs + Lab Feed)
     useEffect(() => {
-        const fetchStatic = async () => {
+        const fetchRecent = async () => {
             if (!user) return
             try {
-                // Recent activity
-                let actSnap;
-                try {
-                    const actQ = query(
-                        collection(db, 'audit_log'),
-                        orderBy('createdAt', 'desc'),
-                        limit(5)
-                    )
-                    actSnap = await getDocs(actQ)
-                } catch (err) {
-                    const actQ2 = query(collection(db, 'audit_log'), limit(20))
-                    const tempSnap = await getDocs(actQ2)
-                    let logs = tempSnap.docs.map(d => ({ id: d.id, ...d.data() }))
-                    logs.sort((a, b) => {
-                        const timeA = a.createdAt?.toMillis ? a.createdAt.toMillis() : 0
-                        const timeB = b.createdAt?.toMillis ? b.createdAt.toMillis() : 0
-                        return timeB - timeA;
-                    })
-                    actSnap = { docs: logs.slice(0, 5).map(l => ({ id: l.id, data: () => l })) }
-                }
+                // 1. Fetch Audit Logs
+                const auditQ = query(collection(db, 'audit_log'), orderBy('createdAt', 'desc'), limit(10))
+                const auditSnap = await getDocs(auditQ)
+                const auditLogs = auditSnap.docs.map(d => ({
+                    id: d.id,
+                    type: 'system',
+                    ...d.data()
+                }))
 
-                const logsMap = actSnap.docs.map(d => ({ id: d.id, ...d.data() }))
+                // 2. Fetch Lab Feed posts
+                const feedQ = query(collection(db, 'lab_feed'), orderBy('createdAt', 'desc'), limit(10))
+                const feedSnap = await getDocs(feedQ)
+                const feedPosts = feedSnap.docs.map(d => ({
+                    id: d.id,
+                    type: 'feed',
+                    action: 'Post en Lab Feed',
+                    detail: d.data().text,
+                    userName: d.data().userName,
+                    userPhoto: d.data().userPhoto,
+                    createdAt: d.data().createdAt,
+                    ...d.data()
+                }))
 
-                const uniqueUserIds = [...new Set(logsMap.map(log => log.userId).filter(Boolean))]
-                const photoMap = {}
-                for (const uid of uniqueUserIds) {
-                    try {
-                        const snap = await getDoc(doc(db, 'users', uid))
-                        if (snap.exists()) photoMap[uid] = snap.data().photoURL || null
-                    } catch (e) { }
-                }
+                // 3. Combine and Sort
+                const combined = [...auditLogs, ...feedPosts].sort((a, b) => {
+                    const timeA = a.createdAt?.toMillis ? a.createdAt.toMillis() : 0
+                    const timeB = b.createdAt?.toMillis ? b.createdAt.toMillis() : 0
+                    return timeB - timeA
+                })
 
-                setRecentActivity(logsMap.map(log => ({
-                    ...log,
-                    userPhoto: log.userPhoto || photoMap[log.userId] || null
-                })))
+                setRecentActivity(combined.slice(0, 10))
 
-                // Stock alerts
+                // 4. Stock Alerts (Independent fetch)
                 const invQ = query(collection(db, 'inventory'), where('group', '==', groupName))
                 const invSnap = await getDocs(invQ)
-                const alerts = invSnap.docs
+                setStockAlerts(invSnap.docs
                     .map(d => ({ id: d.id, ...d.data() }))
                     .filter(item => item.quantity <= item.minStock)
-                setStockAlerts(alerts)
+                )
+
             } catch (err) {
-                console.error('Error fetching dashboard static data:', err)
+                console.error('Error fetching dashboard activity:', err)
             } finally {
                 setLoading(false)
             }
         }
-        fetchStatic()
-    }, [user])
+        fetchRecent()
+    }, [user, groupName])
 
     const quickActions = [
         { label: 'Mis reservas', icon: Calendar, colorClass: 'green', path: '/reservas' },
@@ -291,7 +287,33 @@ export default function Dashboard() {
                             const timeAgo = timeRef?.toDate ? formatDistanceToNow(timeRef.toDate(), { addSuffix: true, locale: es }) : 'reciente'
 
                             return (
-                                <div key={item.id} className="card" style={{ padding: '16px', borderLeft: `4px solid ${colorSet.text}` }}>
+                                <div
+                                    key={item.id}
+                                    className="card"
+                                    onClick={() => {
+                                        if (item.type === 'feed') return navigate('/feed')
+                                        const pg = (item.page || '').toLowerCase()
+                                        if (pg === 'admin') return navigate('/mi-lab')
+                                        if (pg === 'reservas') return navigate('/reservas')
+                                        if (pg === 'inventario') return navigate('/inventario')
+                                        if (pg === 'equipos' || (item.action || '').includes('equipment')) return navigate('/equipos')
+                                        navigate('/feed') // Fallback
+                                    }}
+                                    style={{
+                                        padding: '16px',
+                                        borderLeft: `4px solid ${colorSet.text}`,
+                                        cursor: 'pointer',
+                                        transition: 'transform 0.2s, background 0.2s'
+                                    }}
+                                    onMouseEnter={(e) => {
+                                        e.currentTarget.style.transform = 'translateY(-2px)'
+                                        e.currentTarget.style.background = '#F8FAFC'
+                                    }}
+                                    onMouseLeave={(e) => {
+                                        e.currentTarget.style.transform = 'translateY(0)'
+                                        e.currentTarget.style.background = 'white'
+                                    }}
+                                >
                                     <div style={{ display: 'flex', gap: '12px', alignItems: 'flex-start' }}>
                                         <img
                                             src={item.userPhoto || `https://ui-avatars.com/api/?name=${item.userName || 'U'}&background=random`}
@@ -299,8 +321,9 @@ export default function Dashboard() {
                                             style={{ width: '32px', height: '32px', borderRadius: '50%', objectFit: 'cover', background: '#F5F5F5' }}
                                         />
                                         <div style={{ flex: 1 }}>
-                                            <div style={{ fontSize: '14px', fontWeight: '800', color: '#1A1A2E', marginBottom: '4px' }}>
-                                                {(!item.userName || item.userName === 'undefined undefined') ? 'Usuario Glia' : item.userName}
+                                            <div style={{ fontSize: '14px', fontWeight: '800', color: '#1A1A2E', marginBottom: '4px', display: 'flex', justifyContent: 'space-between' }}>
+                                                <span>{(!item.userName || item.userName === 'undefined undefined') ? 'Usuario Glia' : item.userName}</span>
+                                                {item.type === 'feed' && <span style={{ fontSize: '10px', color: '#9B72CF' }}>Post</span>}
                                             </div>
                                             <div style={{ fontSize: '13px', color: '#666666', marginBottom: '12px', lineHeight: '1.4' }}>
                                                 {item.detail}

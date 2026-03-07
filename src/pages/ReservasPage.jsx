@@ -5,13 +5,17 @@ import toast from 'react-hot-toast'
 import { useAuthStore } from '../store/authStore'
 import { addAuditLog } from '../hooks/useAuth'
 import { db } from '../firebase'
-import { collection, onSnapshot, query, where, addDoc, serverTimestamp, doc, updateDoc, getDocs, getDoc, deleteDoc } from 'firebase/firestore'
-import { addDays, format, parseISO, differenceInMinutes } from 'date-fns'
+import { collection, onSnapshot, query, where, addDoc, serverTimestamp, doc, updateDoc, getDocs, getDoc, deleteDoc, orderBy } from 'firebase/firestore'
+import { addDays, format, parseISO, differenceInMinutes, addHours } from 'date-fns'
 import { es } from 'date-fns/locale'
 
-import { Calendar, Trash2, CheckCircle2, CalendarPlus, ShieldAlert } from 'lucide-react'
+import {
+    Calendar, Trash2, CheckCircle2, CalendarPlus,
+    ShieldAlert, Lock, Check, ChevronLeft, ChevronRight, Clock, Info
+} from 'lucide-react'
+import { sendNotification } from '../hooks/useNotifications'
 
-const TIME_BLOCKS = Array.from({ length: 24 }, (_, i) => `${i.toString().padStart(2, '0')}:00`)
+const TIME_BLOCKS = Array.from({ length: 17 }, (_, i) => `${(i + 6).toString().padStart(2, '0')}:00`) // 06:00 to 22:00
 
 const updatePointsAndLevel = async (userId, pointsToAdd) => {
     try {
@@ -39,17 +43,36 @@ export default function ReservasPage() {
     const { userProfile, user, setUserProfile } = useAuthStore()
 
     const [activeTab, setActiveTab] = useState('Nueva Reserva')
+    const [step, setStep] = useState(1)
+
+    const resetFlow = () => {
+        setStep(1)
+        setSelectedEq(null)
+        setStartTime(null)
+        setEndTime(null)
+        setSelectedDateId(0)
+    }
+
+    const handleTabChange = (tab) => {
+        setActiveTab(tab)
+        if (tab === 'Nueva Reserva') resetFlow()
+    }
 
     const [dates, setDates] = useState([])
-    const [selectedDate, setSelectedDate] = useState(0)
+    const [selectedDateId, setSelectedDateId] = useState(0)
 
     const [equipmentList, setEquipmentList] = useState([])
-    const [selectedEqId, setSelectedEqId] = useState(null)
+    const [selectedEq, setSelectedEq] = useState(null)
 
     const [reservations, setReservations] = useState([])
     const [myReservations, setMyReservations] = useState([])
-    const [selectedStartTime, setSelectedStartTime] = useState(null)   // e.g. "09:00"
-    const [selectedDuration, setSelectedDuration] = useState(1)         // hours: 1-8
+    const [projects, setProjects] = useState([])
+    const [selectedProjectId, setSelectedProjectId] = useState('')
+
+    // Time Selection
+    const [startTime, setStartTime] = useState(null)
+    const [endTime, setEndTime] = useState(null)
+
     const [isSubmitting, setIsSubmitting] = useState(false)
     const [successData, setSuccessData] = useState(null)
 
@@ -65,27 +88,54 @@ export default function ReservasPage() {
             }
         })
         setDates(generated)
-        setSelectedDate(0)
     }, [])
 
     useEffect(() => {
-        const unsub = onSnapshot(collection(db, 'equipment'), (snap) => {
-            const eqData = snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => a.name.localeCompare(b.name))
+        const q = query(collection(db, 'equipment'), orderBy('sortOrder', 'asc'))
+        const unsub = onSnapshot(q, (snap) => {
+            let eqData = snap.docs.map(d => ({ id: d.id, ...d.data() }))
+
+            // Manual fallback for specific order if sortOrder is not set yet
+            const manualOrder = [
+                "Cabina de Cultivo 1", "Cabina de Cultivo 2", "Cabina de Cultivo 3",
+                "Cabina de Cultivo 4", "Cabina de Cultivo 5", "Cabina de Cultivo 6",
+                "Cabina de Bacterias", "Cabina de Extracción",
+                "Microscopio de Fluorescencia", "Termociclador PCR"
+            ]
+
+            eqData.sort((a, b) => {
+                if (a.sortOrder && b.sortOrder) return a.sortOrder - b.sortOrder
+                const idxA = manualOrder.indexOf(a.name)
+                const idxB = manualOrder.indexOf(b.name)
+                if (idxA !== -1 && idxB !== -1) return idxA - idxB
+                if (idxA !== -1) return -1
+                if (idxB !== -1) return 1
+                return a.name.localeCompare(b.name)
+            })
+
             setEquipmentList(eqData)
-            if (!selectedEqId && eqData.length > 0) {
-                setSelectedEqId(eqData[0].id)
-            }
         })
         return unsub
-    }, [selectedEqId])
+    }, [])
 
     useEffect(() => {
-        if (!dates[selectedDate] || !selectedEqId) return
+        if (!user) return
+        const q = query(collection(db, 'projects'))
+        const unsub = onSnapshot(q, (snap) => {
+            const allProj = snap.docs.map(d => ({ id: d.id, ...d.data() }))
+            const myProj = allProj.filter(p => p.ownerId === user.uid || (p.collaborators || []).find(c => c.uid === user.uid))
+            setProjects(myProj)
+        })
+        return unsub
+    }, [user])
+
+    useEffect(() => {
+        if (!dates[selectedDateId] || !selectedEq) return
 
         const q = query(
             collection(db, 'reservations'),
-            where('date', '==', dates[selectedDate].dateStr),
-            where('equipmentId', '==', selectedEqId),
+            where('date', '==', dates[selectedDateId].dateStr),
+            where('equipmentId', '==', selectedEq.id),
             where('status', '==', 'confirmed')
         )
         const unsub = onSnapshot(q, (snap) => {
@@ -93,7 +143,7 @@ export default function ReservasPage() {
             setReservations(res)
         })
         return unsub
-    }, [selectedDate, selectedEqId, dates])
+    }, [selectedDateId, selectedEq, dates])
 
     // "Mis Reservas" tab: for admins show ALL reservations, for users only theirs
     useEffect(() => {
@@ -119,9 +169,6 @@ export default function ReservasPage() {
         }
     }, [activeTab, user, userProfile])
 
-    const currentEq = equipmentList.find(e => e.id === selectedEqId)
-    const currentDay = dates[selectedDate]
-
     const getOccupiedBlocks = () => {
         const occupied = {}
         reservations.forEach(r => {
@@ -142,120 +189,41 @@ export default function ReservasPage() {
 
     const occupied = getOccupiedBlocks()
 
-    const toggleBlock = (time) => {
-        // Legacy: not used in new UI
-    }
-
-    // Derive the selected blocks from start + duration for conflict checking
-    const getSelectedBlocks = () => {
-        if (!selectedStartTime) return []
-        const startIdx = TIME_BLOCKS.indexOf(selectedStartTime)
-        if (startIdx === -1) return []
-        return TIME_BLOCKS.slice(startIdx, Math.min(startIdx + selectedDuration, TIME_BLOCKS.length))
-    }
-    const selectedBlocks = getSelectedBlocks()
-
-    // Compute computed endTime string
-    const getEndTime = () => {
-        if (!selectedStartTime) return null
-        const startIdx = TIME_BLOCKS.indexOf(selectedStartTime)
-        const endIdx = startIdx + selectedDuration
-        return endIdx >= 24 ? '24:00' : TIME_BLOCKS[endIdx]
-    }
-
     const handleConfirm = async () => {
-        if (!selectedStartTime || !currentEq || !currentDay || !user) return
-
-        // ─── PAST DATE/TIME GUARD ────────────────────────────────────────────────
-        const now = new Date()
-        const nowStr = now.toISOString().split('T')[0]
-        const nowHour = now.getHours()
-
-        if (currentDay.dateStr < nowStr) {
-            toast.error('No se pueden realizar reservas en fechas pasadas.')
-            return
-        }
-        if (currentDay.dateStr === nowStr && parseInt(selectedStartTime.split(':')[0]) < nowHour) {
-            toast.error('No puedes reservar en una hora que ya pasó.')
-            return
-        }
-        // ─────────────────────────────────────────────────────────────────────────
-
-        const reqCerts = ['Microscopio de Fluorescencia', 'Termociclador PCR']
-        if (reqCerts.includes(currentEq.name) || currentEq.requiresCertification) {
-            const hasCert = userProfile.certifications && userProfile.certifications.includes(currentEq.name)
-            if (!hasCert) {
-                toast.error(`No tienes la certificación requerida para usar: ${currentEq.name}`)
-                return
-            }
-        }
-
-        if (userProfile.role === 'estudiante' && selectedDate > 7) {
-            toast.error('Estudiantes solo pueden reservar con máximo 8 días de anticipación')
-            return
-        }
-
-        if (userProfile.role === 'estudiante' && selectedDuration > 4) {
-            toast.error('Estudiantes pueden reservar máximo 4 horas por día.')
-            return
-        }
-
-        // Conflict check
-        const q = query(
-            collection(db, 'reservations'),
-            where('date', '==', currentDay.dateStr),
-            where('equipmentId', '==', selectedEqId),
-            where('status', '==', 'confirmed')
-        )
-        const currSnap = await getDocs(q)
-        const existingBlocks = []
-        currSnap.docs.forEach(d => {
-            const r = d.data()
-            const startIdx = TIME_BLOCKS.indexOf(r.startTime)
-            let endStr = r.endTime === '24:00' ? '23:00' : r.endTime
-            const endIdx = TIME_BLOCKS.indexOf(endStr)
-            for (let i = startIdx; i < (endIdx === -1 ? TIME_BLOCKS.length : endIdx); i++) {
-                existingBlocks.push(TIME_BLOCKS[i])
-            }
-        })
-
-        const conflict = selectedBlocks.some(b => existingBlocks.includes(b))
-        if (conflict) {
-            toast.error('Este horario ya fue reservado. Elige otro.')
-            setSelectedStartTime(null)
-            return
-        }
-
-        const endTimeStr = getEndTime()
+        if (!startTime || !endTime || !selectedEq || !dates[selectedDateId] || !user) return
 
         setIsSubmitting(true)
         try {
-            const endTimeStr = getEndTime()
+            const currentDay = dates[selectedDateId]
             await addDoc(collection(db, 'reservations'), {
-                equipmentId: currentEq.id,
-                equipmentName: currentEq.name,
+                equipmentId: selectedEq.id,
+                equipmentName: selectedEq.name,
                 userId: user.uid,
                 userName: (userProfile?.firstName && userProfile?.lastName) ? `${userProfile.firstName} ${userProfile.lastName}` : (user?.displayName || 'Usuario'),
-                userGroup: userProfile.group || '',
+                userGroup: userProfile?.group || '',
                 date: currentDay.dateStr,
-                startTime: selectedStartTime,
-                endTime: endTimeStr,
-                slots: selectedDuration,
+                startTime,
+                endTime,
+                projectId: selectedProjectId || null,
+                projectName: projects.find(p => p.id === selectedProjectId)?.name || null,
                 status: 'confirmed',
                 createdAt: serverTimestamp(),
-                cancelledAt: null
             })
 
             const finalLogName = (userProfile?.firstName && userProfile?.lastName) ? `${userProfile.firstName} ${userProfile.lastName}` : (user?.displayName || 'Usuario')
-            await addAuditLog(user.uid, finalLogName, 'reservation_created', `Reserva en ${currentEq.name} el ${currentDay.dateStr} ${selectedStartTime}-${endTimeStr}`, 'reservas')
+            await addAuditLog(user.uid, finalLogName, 'reservation_created', `Reserva en ${selectedEq.name} el ${currentDay.dateStr} ${startTime}-${endTime}`, 'reservas')
 
-            setSelectedStartTime(null)
-            setSelectedDuration(1)
+            // Send Notification
+            await sendNotification(user.uid, {
+                type: 'reservation_confirmed',
+                message: `Tu reserva de ${selectedEq.name} fue confirmada para el ${currentDay.dateStr} a las ${startTime}`
+            })
+
             setSuccessData({
-                eqName: currentEq.name,
+                eqName: selectedEq.name,
                 dateStr: currentDay.dateStr,
-                startTime: selectedStartTime,
-                endTime: endTimeStr,
+                startTime: startTime,
+                endTime: endTime,
                 displayDate: format(currentDay.dateObj, "EEEE d 'de' MMMM", { locale: es })
             })
         } catch (err) {
@@ -297,6 +265,12 @@ export default function ReservasPage() {
 
             await addAuditLog(user.uid, `${userProfile?.firstName} ${userProfile?.lastName}`, 'reservation_cancelled', `Canceló reserva de ${reservation.equipmentName}`, 'reservas')
 
+            // Send Notification
+            await sendNotification(reservation.userId, {
+                type: 'reservation_cancelled',
+                message: `Tu reserva de ${reservation.equipmentName} para el ${reservation.date} fue cancelada`
+            })
+
         } catch (err) {
             console.error('Error cancelling reservation:', err)
             toast.error('Hubo un problema al cancelar la reserva.')
@@ -323,6 +297,13 @@ export default function ReservasPage() {
                 `Admin eliminó reserva de ${reservation.userName || 'usuario'} en ${reservation.equipmentName} (${reservation.date})`,
                 'reservas'
             )
+
+            // Send Notification to user (deleted by admin)
+            await sendNotification(reservation.userId, {
+                type: 'reservation_cancelled',
+                message: `Tu reserva de ${reservation.equipmentName} para el ${reservation.date} fue cancelada por el administrador`
+            })
+
             toast.success('Reserva eliminada correctamente.')
         } catch (err) {
             console.error('Error deleting reservation:', err)
@@ -330,37 +311,25 @@ export default function ReservasPage() {
         }
     }
 
-    const handleEqChange = (id) => {
-        setSelectedEqId(id)
-        setSelectedStartTime(null)
-        setSelectedDuration(1)
-    }
+    // Event handlers for direct changes no longer used in stepped flow
 
-    const handleDateChange = (id) => {
-        setSelectedDate(id)
-        setSelectedStartTime(null)
-        setSelectedDuration(1)
-    }
-
-    const handleDownloadICS = (eqName, dateStr, startTime, endTime) => {
-        const formatICSDate = (dt, time) => {
-            const [y, m, d] = dt.split('-');
+    const handleAddToGoogleCalendar = (eqName, dateStr, startTime, endTime) => {
+        const formatGCalDate = (dt, time) => {
+            const cleanDate = dt.replace(/-/g, '');
             let [h, min] = time.split(':');
-            if (h === '24') { h = '23'; min = '59'; }
-            return `${y}${m}${d}T${h}${min}00`;
+            return `${cleanDate}T${h}${min}00`;
         }
-        const startStr = formatICSDate(dateStr, startTime);
-        const endStr = formatICSDate(dateStr, endTime);
 
-        const icsContent = `BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//Glia App//Laboratorio//ES\nCALSCALE:GREGORIAN\nBEGIN:VEVENT\nSUMMARY:Reserva: ${eqName}\nDTSTART;TZID=America/Bogota:${startStr}\nDTEND;TZID=America/Bogota:${endStr}\nDESCRIPTION:Reserva de equipo en el laboratorio\\nIngresa a Glia para mas detalles.\nLOCATION:Laboratorio PUJ\nSTATUS:CONFIRMED\nEND:VEVENT\nEND:VCALENDAR`;
+        const startStr = formatGCalDate(dateStr, startTime);
+        const endStr = formatGCalDate(dateStr, endTime);
 
-        const blob = new Blob([icsContent], { type: 'text/calendar;charset=utf-8' });
-        const link = document.createElement('a');
-        link.href = URL.createObjectURL(blob);
-        link.download = `reserva-${eqName.replace(/\s+/g, '-')}-${dateStr}.ics`;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
+        const title = encodeURIComponent(`Reserva: ${eqName}`);
+        const details = encodeURIComponent(`Reserva gestionada via Glia App.\nEquipo: ${eqName}\nFecha: ${dateStr}\nHorario: ${startTime} - ${endTime}`);
+        const location = encodeURIComponent('Laboratorio Glia - PUJ');
+
+        const gcalUrl = `https://www.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${startStr}/${endStr}&details=${details}&location=${location}&sf=true&output=xml`;
+
+        window.open(gcalUrl, '_blank');
     }
 
     if (!dates.length) return null;
@@ -388,17 +357,24 @@ export default function ReservasPage() {
 
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                         <button
-                            onClick={() => handleDownloadICS(successData.eqName, successData.dateStr, successData.startTime, successData.endTime)}
+                            onClick={() => handleAddToGoogleCalendar(successData.eqName, successData.dateStr, successData.startTime, successData.endTime)}
                             style={{ width: '100%', padding: '18px', borderRadius: '20px', background: '#1A1A2E', color: 'white', fontSize: '15px', fontWeight: '800', border: 'none', cursor: 'pointer', boxShadow: '0 4px 12px rgba(26,26,46,0.2)', transition: 'transform 0.2s' }}
                         >
-                            Agregar al calendario
+                            Agregar a Google Calendar
                         </button>
 
                         <button
-                            onClick={() => { setSuccessData(null); navigate('/'); }}
-                            style={{ width: '100%', padding: '18px', borderRadius: '20px', background: 'transparent', color: '#64748B', fontSize: '15px', fontWeight: '700', border: 'none', cursor: 'pointer' }}
+                            onClick={() => { setSuccessData(null); resetFlow(); }}
+                            style={{ width: '100%', padding: '18px', borderRadius: '20px', background: '#F1F5F9', color: '#1A1A2E', fontSize: '15px', fontWeight: '800', border: 'none', cursor: 'pointer' }}
                         >
-                            Ir al Inicio
+                            Reservar otro equipo
+                        </button>
+
+                        <button
+                            onClick={() => { setSuccessData(null); resetFlow(); navigate('/'); }}
+                            style={{ width: '100%', padding: '12px', borderRadius: '20px', background: 'transparent', color: '#64748B', fontSize: '14px', fontWeight: '700', border: 'none', cursor: 'pointer' }}
+                        >
+                            Volver al Inicio
                         </button>
                     </div>
                 </div>
@@ -418,7 +394,7 @@ export default function ReservasPage() {
                 {['Nueva Reserva', 'Mis Reservas'].map(tab => (
                     <button
                         key={tab}
-                        onClick={() => setActiveTab(tab)}
+                        onClick={() => handleTabChange(tab)}
                         style={{
                             flex: 1, padding: '10px 24px', borderRadius: '14px', fontSize: '14px', fontWeight: '800', cursor: 'pointer', transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)', border: 'none',
                             background: activeTab === tab ? '#FFFFFF' : 'transparent',
@@ -474,8 +450,8 @@ export default function ReservasPage() {
                                         <div style={{ display: 'flex', gap: '10px' }}>
                                             {isOwn && (
                                                 <button
-                                                    onClick={() => handleDownloadICS(res.equipmentName, res.date, res.startTime, res.endTime)}
-                                                    title="Agregar al calendario"
+                                                    onClick={() => handleAddToGoogleCalendar(res.equipmentName, res.date, res.startTime, res.endTime)}
+                                                    title="Agregar a Google Calendar"
                                                     style={{ width: '44px', height: '44px', borderRadius: '14px', border: '1px solid #F1F5F9', background: '#F8FAFC', color: '#64748B', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', transition: 'all 0.2s' }}
                                                 >
                                                     <CalendarPlus size={20} />
@@ -510,211 +486,293 @@ export default function ReservasPage() {
 
             {activeTab === 'Nueva Reserva' && (
                 <div style={{ animation: 'fadeIn 0.4s ease-out' }}>
-                    {/* Date Selection */}
-                    <div style={{ marginBottom: '32px' }}>
-                        <h4 style={{ fontSize: '14px', fontWeight: '800', color: '#1A1A2E', marginBottom: '16px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>1. Selecciona el día</h4>
-                        <div style={{ display: 'flex', gap: '10px', overflowX: 'auto', paddingBottom: '16px', margin: '0 -24px', paddingLeft: '24px', paddingRight: '24px', scrollbarWidth: 'none' }}>
-                            {dates.map(d => {
-                                const isActive = selectedDate === d.id
-                                return (
-                                    <div
-                                        key={d.id}
-                                        onClick={() => handleDateChange(d.id)}
-                                        style={{
-                                            flex: '0 0 auto', minWidth: '70px', height: '88px', borderRadius: '20px',
-                                            background: isActive ? '#1A1A2E' : '#FFFFFF',
-                                            color: isActive ? '#FFFFFF' : '#1A1A2E',
-                                            display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-                                            cursor: 'pointer',
-                                            boxShadow: isActive ? '0 10px 20px rgba(26,26,46,0.15)' : '0 2px 8px rgba(0,0,0,0.03)',
-                                            transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
-                                            border: isActive ? 'none' : '1px solid #F0F0F0'
-                                        }}
-                                    >
-                                        <span style={{ fontSize: '11px', fontWeight: '900', opacity: isActive ? 0.8 : 0.5, marginBottom: '2px' }}>{d.day}</span>
-                                        <span style={{ fontSize: '24px', fontWeight: '900' }}>{d.num}</span>
-                                    </div>
-                                )
-                            })}
-                        </div>
+
+                    {/* STEP PROGRESS */}
+                    <div style={{ display: 'flex', gap: '8px', marginBottom: '32px' }}>
+                        {[1, 2, 3].map(s => (
+                            <div key={s} style={{ flex: 1, height: '4px', background: step >= s ? '#9B72CF' : '#E2E8F0', borderRadius: '2px', transition: 'background 0.3s' }} />
+                        ))}
                     </div>
 
-                    {/* Equipment Selection */}
-                    <div style={{ marginBottom: '32px' }}>
-                        <h4 style={{ fontSize: '14px', fontWeight: '800', color: '#1A1A2E', marginBottom: '16px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>2. Selecciona el equipo</h4>
-                        <div style={{ display: 'flex', gap: '12px', overflowX: 'auto', paddingBottom: '20px', margin: '0 -24px', paddingLeft: '24px', paddingRight: '24px', scrollbarWidth: 'none' }}>
-                            {equipmentList.map(eq => {
-                                const isActive = selectedEqId === eq.id
-                                return (
-                                    <div
-                                        key={eq.id}
-                                        onClick={() => handleEqChange(eq.id)}
-                                        style={{
-                                            flex: '0 0 auto', padding: '14px 24px', borderRadius: '20px',
-                                            background: isActive ? '#9B72CF' : '#FFFFFF',
-                                            color: isActive ? '#FFFFFF' : '#64748B',
-                                            fontSize: '14px', fontWeight: '900', cursor: 'pointer',
-                                            boxShadow: isActive ? '0 8px 20px rgba(155,114,207,0.25)' : '0 2px 8px rgba(0,0,0,0.03)',
-                                            transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
-                                            border: isActive ? 'none' : '1px solid #F0F0F0'
-                                        }}
-                                    >
-                                        {eq.name.replace('Cabina de ', 'C. ').replace('Microscopio de ', 'M. ')}
-                                    </div>
-                                )
-                            })}
+                    {/* STEP 1: SELECT EQUIPMENT */}
+                    {step === 1 && (
+                        <div style={{ animation: 'fadeIn 0.3s ease-out' }}>
+                            <h2 style={{ fontSize: '18px', fontWeight: '800', marginBottom: '20px', color: '#1A1A2E' }}>Selecciona el equipo</h2>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                                {equipmentList.map(eq => {
+                                    const isSelected = selectedEq?.id === eq.id;
+                                    const requiresCert = eq.requiresCertification;
+                                    const isCertified = userProfile?.certifications?.includes(eq.name);
+                                    const isDisabled = requiresCert && !isCertified;
+
+                                    return (
+                                        <div
+                                            key={eq.id}
+                                            onClick={() => !isDisabled && setSelectedEq(eq)}
+                                            style={{
+                                                padding: '16px',
+                                                borderRadius: '20px',
+                                                background: isDisabled ? '#F1F5F9' : '#FFFFFF',
+                                                border: isSelected ? '2px solid #9B72CF' : '2px solid transparent',
+                                                boxShadow: '0 4px 12px rgba(0,0,0,0.05)',
+                                                cursor: isDisabled ? 'not-allowed' : 'pointer',
+                                                position: 'relative',
+                                                transition: 'all 0.2s'
+                                            }}
+                                        >
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px' }}>
+                                                <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: eq.status === 'available' ? '#34C759' : '#FF3B30' }} />
+                                                <span style={{ fontSize: '10px', fontWeight: '800', color: eq.status === 'available' ? '#34C759' : '#FF3B30', textTransform: 'uppercase' }}>
+                                                    {eq.status === 'available' ? 'Disponible' : 'Ocupado'}
+                                                </span>
+                                            </div>
+                                            <h3 style={{ fontSize: '14px', fontWeight: '800', color: isDisabled ? '#94A3B8' : '#1A1A2E', marginBottom: '4px' }}>{eq.name}</h3>
+
+                                            {isDisabled && (
+                                                <div style={{ position: 'absolute', top: '12px', right: '12px', color: '#94A3B8' }}>
+                                                    <Lock size={14} />
+                                                </div>
+                                            )}
+                                            {isSelected && !isDisabled && (
+                                                <div style={{ position: 'absolute', top: '12px', right: '12px', color: '#9B72CF' }}>
+                                                    <Check size={18} />
+                                                </div>
+                                            )}
+                                        </div>
+                                    );
+                                })}
+                            </div>
+
+                            <button
+                                disabled={!selectedEq}
+                                onClick={() => setStep(2)}
+                                style={{
+                                    marginTop: '32px', width: '100%', padding: '16px', borderRadius: '16px',
+                                    background: selectedEq ? '#9B72CF' : '#E2E8F0',
+                                    color: 'white', fontWeight: '800', border: 'none', cursor: 'pointer'
+                                }}
+                            >
+                                Siguiente
+                            </button>
                         </div>
-                    </div>
+                    )}
 
-                    {/* Step 3: Time Picker */}
-                    {currentEq && (() => {
-                        const now = new Date()
-                        const isToday = selectedDate === 0
-                        const nowHour = now.getHours()
-                        const isAdmin = userProfile?.role === 'admin'
-                        const isAvailable = currentEq.status === 'available' || isAdmin
+                    {/* STEP 2: SELECT DATE & TIME */}
+                    {step === 2 && (
+                        <div style={{ animation: 'fadeIn 0.3s ease-out' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                                <button onClick={() => setStep(1)} style={{ background: 'none', border: 'none', color: '#9B72CF', cursor: 'pointer' }}><ChevronLeft size={24} /></button>
+                                <h2 style={{ fontSize: '18px', fontWeight: '800', color: '#1A1A2E', margin: 0 }}>Fecha y Horario</h2>
+                            </div>
+                            <p style={{ fontSize: '13px', color: '#64748B', marginBottom: '20px', fontWeight: '500' }}>
+                                Selecciona tu bloque de <span style={{ color: '#9B72CF', fontWeight: '800' }}>inicio</span> y luego el de <span style={{ color: '#9B72CF', fontWeight: '800' }}>fin</span> (máx. 6 horas).
+                            </p>
 
-                        // Build available start hours: not occupied and not past (for today)
-                        const availableHours = TIME_BLOCKS.filter(time => {
-                            const hour = parseInt(time.split(':')[0])
-                            if (!isAdmin && !isAvailable) return false
-                            if (isToday && hour <= nowHour && !isAdmin) return false
-                            return true
-                        })
-
-                        // For a selected start, compute max allowed duration (until next occupied or midnight)
-                        const maxDuration = (() => {
-                            if (!selectedStartTime) return 8
-                            const startIdx = TIME_BLOCKS.indexOf(selectedStartTime)
-                            let maxH = 8
-                            for (let i = 1; i <= 8; i++) {
-                                const checkIdx = startIdx + i
-                                if (checkIdx >= 24) { maxH = i; break }
-                                if (occupied[TIME_BLOCKS[checkIdx]]) { maxH = i; break }
-                            }
-                            return maxH
-                        })()
-
-                        // Clamp duration if max decreased
-                        if (selectedDuration > maxDuration && selectedStartTime) {
-                            setTimeout(() => setSelectedDuration(maxDuration), 0)
-                        }
-
-                        const endTime = getEndTime()
-
-                        return (
-                            <div style={{ marginBottom: '32px' }}>
-                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
-                                    <h4 style={{ fontSize: '14px', fontWeight: '800', color: '#1A1A2E', textTransform: 'uppercase', letterSpacing: '0.05em' }}>3. Horario</h4>
-                                    {currentEq.status === 'out_of_service' && <span style={{ color: '#FF4D4F', fontWeight: '900', fontSize: '12px' }}>FUERA DE SERVICIO</span>}
-                                    {currentEq.status === 'maintenance' && <span style={{ color: '#FAAD14', fontWeight: '900', fontSize: '12px' }}>MANTENIMIENTO</span>}
-                                    {currentEq.status === 'available' && <span style={{ color: '#52C41A', fontWeight: '900', fontSize: '12px' }}>DISPONIBLE</span>}
-                                </div>
-
-                                <div className="card" style={{ padding: '24px', borderRadius: '28px' }}>
-                                    {/* 3a. Start time row */}
-                                    <div style={{ marginBottom: '24px' }}>
-                                        <div style={{ fontSize: '12px', fontWeight: '800', color: '#94A3B8', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '12px' }}>Hora de inicio</div>
-                                        <div style={{ display: 'flex', gap: '8px', overflowX: 'auto', paddingBottom: '8px', scrollbarWidth: 'none' }}>
-                                            {TIME_BLOCKS.map(time => {
-                                                const hour = parseInt(time.split(':')[0])
-                                                const isPast = isToday && hour <= nowHour && !isAdmin
-                                                const isOccupied = !!occupied[time]
-                                                const isDisabled = isPast || isOccupied || !isAvailable
-                                                const isSelected = selectedStartTime === time
-
-                                                return (
-                                                    <button
-                                                        key={time}
-                                                        onClick={() => !isDisabled && setSelectedStartTime(isSelected ? null : time)}
-                                                        style={{
-                                                            flexShrink: 0,
-                                                            padding: '10px 16px', borderRadius: '14px', fontSize: '13px', fontWeight: '800',
-                                                            border: 'none', cursor: isDisabled ? 'not-allowed' : 'pointer',
-                                                            background: isSelected ? '#9B72CF' : isOccupied ? '#FFF1F0' : isPast ? '#F1F5F9' : '#F0FDF4',
-                                                            color: isSelected ? 'white' : isOccupied ? '#FF4D4F' : isPast ? '#CBD5E1' : '#16A34A',
-                                                            opacity: isDisabled && !isOccupied ? 0.5 : 1,
-                                                            transition: 'all 0.2s',
-                                                            boxShadow: isSelected ? '0 4px 12px rgba(155,114,207,0.35)' : 'none',
-                                                            position: 'relative'
-                                                        }}
-                                                    >
-                                                        {time}
-                                                        {isOccupied && (
-                                                            <span style={{ position: 'absolute', top: '-4px', right: '-4px', width: '8px', height: '8px', borderRadius: '50%', background: '#FF4D4F', border: '2px solid white' }} />
-                                                        )}
-                                                    </button>
-                                                )
-                                            })}
+                            {/* DATE STRIP */}
+                            <div style={{ display: 'flex', gap: '10px', overflowX: 'auto', marginBottom: '24px', scrollbarWidth: 'none', padding: '4px' }}>
+                                {dates.map((d, idx) => {
+                                    const isStudent = userProfile?.role === 'estudiante';
+                                    const isBlocked = isStudent && idx > 7;
+                                    const isSelected = selectedDateId === idx;
+                                    const isToday = idx === 0;
+                                    return (
+                                        <div
+                                            key={d.id}
+                                            onClick={() => !isBlocked && setSelectedDateId(idx)}
+                                            style={{
+                                                flex: '0 0 auto', width: '64px', height: '80px', borderRadius: '16px',
+                                                background: isSelected ? '#9B72CF' : isBlocked ? '#F1F5F9' : '#FFFFFF',
+                                                color: isSelected ? 'white' : isBlocked ? '#CBD5E1' : '#1A1A2E',
+                                                display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                                                cursor: isBlocked ? 'not-allowed' : 'pointer',
+                                                boxShadow: isSelected ? '0 4px 12px rgba(155,114,207,0.3)' : '0 2px 8px rgba(0,0,0,0.05)',
+                                                border: isSelected ? 'none' : isToday ? '2px solid #9B72CF' : '1px solid #F1F5F9'
+                                            }}
+                                        >
+                                            <span style={{ fontSize: '10px', fontWeight: '800', marginBottom: '4px' }}>{d.day}</span>
+                                            <span style={{ fontSize: '20px', fontWeight: '900' }}>{d.num}</span>
                                         </div>
-                                    </div>
+                                    );
+                                })}
+                            </div>
 
-                                    {/* 3b. Duration selector */}
-                                    {selectedStartTime && (
-                                        <div style={{ marginBottom: '24px' }}>
-                                            <div style={{ fontSize: '12px', fontWeight: '800', color: '#94A3B8', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '12px' }}>Duración</div>
-                                            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                                                {[1, 2, 3, 4, 5, 6, 7, 8].map(h => {
-                                                    const isDisabled = h > maxDuration
-                                                    const isSelected = selectedDuration === h
-                                                    return (
-                                                        <button
-                                                            key={h}
-                                                            onClick={() => !isDisabled && setSelectedDuration(h)}
-                                                            style={{
-                                                                padding: '10px 18px', borderRadius: '14px', fontSize: '14px', fontWeight: '900',
-                                                                border: 'none', cursor: isDisabled ? 'not-allowed' : 'pointer',
-                                                                background: isSelected ? '#1A1A2E' : isDisabled ? '#F1F5F9' : '#F8FAFC',
-                                                                color: isSelected ? 'white' : isDisabled ? '#CBD5E1' : '#64748B',
-                                                                opacity: isDisabled ? 0.5 : 1,
-                                                                transition: 'all 0.2s',
-                                                                boxShadow: isSelected ? '0 4px 12px rgba(26,26,46,0.2)' : 'none'
-                                                            }}
-                                                        >
-                                                            {h}h
-                                                        </button>
-                                                    )
-                                                })}
-                                            </div>
-                                        </div>
-                                    )}
+                            {/* TIMELINE */}
+                            <div style={{ background: 'white', borderRadius: '24px', padding: '20px', boxShadow: '0 4px 12px rgba(0,0,0,0.05)' }}>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                                    {TIME_BLOCKS.map((time, idx) => {
+                                        const hourNum = parseInt(time.split(':')[0]);
+                                        const now = new Date();
+                                        const isToday = selectedDateId === 0;
+                                        // Strict past check: if today, disable current and past hours
+                                        const isPast = isToday && hourNum <= now.getHours();
+                                        const res = reservations.find(r => r.startTime === time || (time >= r.startTime && time < r.endTime));
+                                        const isOccupied = !!res;
 
-                                    {/* 3c. Preview + confirm */}
-                                    {selectedStartTime && endTime && (
-                                        <div style={{ background: 'linear-gradient(135deg, #2D1B5E 0%, #9B72CF 100%)', borderRadius: '20px', padding: '20px 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                                            <div>
-                                                <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.6)', fontWeight: '800', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '4px' }}>Tu reserva</div>
-                                                <div style={{ fontSize: '22px', fontWeight: '900', color: 'white', letterSpacing: '-0.01em' }}>
-                                                    {selectedStartTime} → {endTime}
-                                                </div>
-                                                <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.65)', fontWeight: '700', marginTop: '2px' }}>
-                                                    {selectedDuration} hora{selectedDuration > 1 ? 's' : ''} · {currentEq.name}
-                                                </div>
-                                            </div>
-                                            <button
-                                                onClick={handleConfirm}
-                                                disabled={isSubmitting}
+                                        const isSelected = startTime === time;
+                                        const isInRange = startTime && endTime && time >= startTime && time < endTime;
+
+                                        const handleTimeClick = () => {
+                                            if (isPast || isOccupied) return;
+
+                                            // Case 1: Starting a new selection
+                                            // (either nothing selected or we already had a complete range)
+                                            if (!startTime || (startTime && endTime)) {
+                                                setStartTime(time);
+                                                setEndTime(null);
+                                                return;
+                                            }
+
+                                            // Case 2: Expanding an existing start point (startTime exists, endTime is null)
+                                            if (startTime && !endTime) {
+                                                if (time === startTime) {
+                                                    // Clicking same block makes it a 1-hour reservation
+                                                    setEndTime(TIME_BLOCKS[idx + 1] || "23:00");
+                                                } else if (time > startTime) {
+                                                    const startIdx = TIME_BLOCKS.indexOf(startTime);
+                                                    const endIdx = TIME_BLOCKS.indexOf(time);
+                                                    const duration = endIdx - startIdx + 1;
+
+                                                    if (duration > 6) {
+                                                        toast.error('Máximo 6 horas de reserva');
+                                                        // Keep current startTime, don't reset
+                                                        return;
+                                                    }
+
+                                                    // Check for conflicts in between
+                                                    const hasOverlap = TIME_BLOCKS.slice(startIdx, endIdx + 1).some(t => {
+                                                        return reservations.some(r => t >= r.startTime && t < r.endTime);
+                                                    });
+
+                                                    if (hasOverlap) {
+                                                        toast.error('El rango se cruza con otra reserva');
+                                                        return;
+                                                    }
+
+                                                    setEndTime(TIME_BLOCKS[idx + 1] || "23:00");
+                                                } else {
+                                                    // Clicked before startTime - restart selection here
+                                                    setStartTime(time);
+                                                    setEndTime(TIME_BLOCKS[idx + 1] || "23:00");
+                                                }
+                                            }
+                                        };
+
+                                        return (
+                                            <div
+                                                key={time}
+                                                onClick={handleTimeClick}
                                                 style={{
-                                                    background: 'white', color: '#2D1B5E', border: 'none', borderRadius: '16px',
-                                                    padding: '14px 22px', fontSize: '14px', fontWeight: '900', cursor: 'pointer',
-                                                    boxShadow: '0 4px 16px rgba(0,0,0,0.15)', transition: 'all 0.2s', flexShrink: 0
+                                                    display: 'flex', alignItems: 'center', gap: '12px', height: '44px',
+                                                    position: 'relative'
                                                 }}
                                             >
-                                                {isSubmitting ? '...' : 'Confirmar'}
-                                            </button>
-                                        </div>
-                                    )}
+                                                <span style={{ fontSize: '11px', fontWeight: '700', color: '#94A3B8', width: '40px' }}>{time}</span>
+                                                <div style={{
+                                                    flex: 1, height: '100%', borderRadius: '8px',
+                                                    background: isPast ? '#F1F5F9' : isOccupied ? '#FFF0F0' : (isSelected || isInRange) ? '#F0EBF8' : '#F0FDF4',
+                                                    border: (isSelected || isInRange) ? '2px solid #9B72CF' : '1px solid transparent',
+                                                    display: 'flex', alignItems: 'center', padding: '0 12px',
+                                                    cursor: (isPast || isOccupied) ? 'not-allowed' : 'pointer',
+                                                    transition: 'all 0.2s'
+                                                }}>
+                                                    {isOccupied && <span style={{ fontSize: '11px', fontWeight: '800', color: '#FF3B30' }}>{res.userName}</span>}
+                                                    {!isOccupied && !isPast && !isInRange && <span style={{ fontSize: '11px', fontWeight: '700', color: '#34C759' }}>Disponible</span>}
+                                                    {isInRange && <span style={{ fontSize: '11px', fontWeight: '800', color: '#9B72CF' }}>Tu selección</span>}
+                                                </div>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            </div>
 
-                                    {/* No start selected yet */}
-                                    {!selectedStartTime && (
-                                        <div style={{ textAlign: 'center', padding: '16px 0 4px', color: '#94A3B8', fontSize: '13px', fontWeight: '600' }}>
-                                            Selecciona una hora de inicio
+                            {/* SUMMARY & NEXT */}
+                            {startTime && (
+                                <div style={{
+                                    marginTop: '24px', background: '#F0EBF8', padding: '20px', borderRadius: '20px',
+                                    display: 'flex', alignItems: 'center', justifyContent: 'space-between'
+                                }}>
+                                    <div>
+                                        <div style={{ fontSize: '12px', color: '#9B72CF', fontWeight: '800' }}>SELECCIÓN</div>
+                                        <div style={{ fontSize: '16px', fontWeight: '900', color: '#1A1A2E' }}>
+                                            {startTime} — {endTime}
+                                        </div>
+                                    </div>
+                                    <button
+                                        disabled={!endTime}
+                                        onClick={() => setStep(3)}
+                                        style={{ background: endTime ? '#9B72CF' : '#E2E8F0', color: 'white', padding: '12px 24px', borderRadius: '12px', border: 'none', fontWeight: '800', cursor: 'pointer' }}
+                                    >
+                                        Siguiente
+                                    </button>
+                                </div>
+                            )}
+                        </div>
+                    )}
+
+                    {/* STEP 3: CONFIRM */}
+                    {step === 3 && (
+                        <div style={{ animation: 'fadeIn 0.3s ease-out' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '20px' }}>
+                                <button onClick={() => setStep(2)} style={{ background: 'none', border: 'none', color: '#9B72CF', cursor: 'pointer' }}><ChevronLeft size={24} /></button>
+                                <h2 style={{ fontSize: '18px', fontWeight: '800', color: '#1A1A2E', margin: 0 }}>Confirmar Reserva</h2>
+                            </div>
+
+                            <div className="card" style={{ padding: '24px', borderRadius: '24px' }}>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+                                    <div>
+                                        <span style={{ fontSize: '11px', fontWeight: '800', color: '#94A3B8', textTransform: 'uppercase' }}>EQUIPO</span>
+                                        <div style={{ fontSize: '18px', fontWeight: '900', color: '#1A1A2E' }}>{selectedEq?.name}</div>
+                                    </div>
+                                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+                                        <div>
+                                            <span style={{ fontSize: '11px', fontWeight: '800', color: '#94A3B8', textTransform: 'uppercase' }}>FECHA</span>
+                                            <div style={{ fontSize: '16px', fontWeight: '800', color: '#1A1A2E' }}>{dates[selectedDateId].dateStr}</div>
+                                        </div>
+                                        <div>
+                                            <span style={{ fontSize: '11px', fontWeight: '800', color: '#94A3B8', textTransform: 'uppercase' }}>HORARIO</span>
+                                            <div style={{ fontSize: '16px', fontWeight: '800', color: '#1A1A2E' }}>{startTime} — {endTime}</div>
+                                        </div>
+                                    </div>
+                                    <div style={{ padding: '16px', background: '#F8FAFC', borderRadius: '16px', display: 'flex', alignItems: 'center', gap: '12px' }}>
+                                        <Clock size={20} color="#9B72CF" />
+                                        <span style={{ fontSize: '14px', fontWeight: '800', color: '#1A1A2E' }}>
+                                            Duración: {(() => {
+                                                const sIdx = TIME_BLOCKS.indexOf(startTime);
+                                                const eIdx = TIME_BLOCKS.indexOf(endTime === "23:00" ? "22:00" : endTime);
+                                                return endTime === "23:00" ? (22 - sIdx + 1) : (eIdx - sIdx);
+                                            })()} horas
+                                        </span>
+                                    </div>
+                                    {projects.length > 0 && (
+                                        <div style={{ marginTop: '20px' }}>
+                                            <label style={{ fontSize: '11px', fontWeight: '800', color: '#94A3B8', textTransform: 'uppercase', marginBottom: '8px', display: 'block' }}>Vincular a Proyecto (Opcional)</label>
+                                            <select
+                                                value={selectedProjectId}
+                                                onChange={e => setSelectedProjectId(e.target.value)}
+                                                className="input-field"
+                                                style={{ background: '#F5F5F5', border: '1px solid #E0E0E0' }}
+                                            >
+                                                <option value="">Ninguno</option>
+                                                {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                                            </select>
                                         </div>
                                     )}
                                 </div>
+
+                                <button
+                                    onClick={handleConfirm}
+                                    disabled={isSubmitting}
+                                    style={{
+                                        width: '100%', marginTop: '32px', padding: '18px', borderRadius: '16px',
+                                        background: '#2D1B5E', color: 'white', fontSize: '16px', fontWeight: '800',
+                                        border: 'none', cursor: 'pointer', boxShadow: '0 4px 12px rgba(45,27,94,0.3)'
+                                    }}
+                                >
+                                    {isSubmitting ? 'Confirmando...' : 'Confirmar Reserva'}
+                                </button>
                             </div>
-                        )
-                    })()}
+                        </div>
+                    )}
                 </div>
             )}
 
